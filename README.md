@@ -1,48 +1,50 @@
-> [!NOTE]
-> You can read the original README for the OpenGOAL project [here](https://github.com/open-goal/jak-project/blob/master/README.md).
-> In particular you may want to check out the Development Environment setup [here](https://github.com/open-goal/jak-project/blob/master/README.md#setting-up-a-development-environment)
+# True Flight — Jak 3
 
-# OpenGoal-Mod-Base
-Serves as a base template for openGOAL mods that will be supported via [OG-ModLauncher](https://github.com/OpenGOAL-Mods/OG-ModLauncher).
+**Light Jak really flies.** An [OpenGOAL](https://opengoal.dev) mod for *Jak 3* that turns Light Jak's
+short glide into full flight: stacking wing flaps, a momentum glide, a turbo, and a superhero landing
+that sets off a Dark Bomb blast.
 
-- Please ensure you are not committing copyrighted material to your repo (the `.gitignore` should help prevent this). 
-- Generally speaking you should only be updating certain directories/files:
-  - GOAL code (`/goal_src`)
-  - Assets specific to the PC Port (`/game/assets/jak1/`, `/custom_assets/`)
-  - The executable binaries (`/out/build/Release/goalc.exe`, `/out/build/Release/gk.exe`, `/out/build/Release/extractor.exe`)
-  - Decompiler config (`/decompiler/config`)
+## Controls (as Light Jak)
 
-## Custom Navmesh Implementation and Example
+| Input | Action |
+|---|---|
+| **X** in the air | Flap. Every flap stacks more height; **hold X** through a flap for extra lift |
+| **Hold L1** | Glide. Diving turns into forward speed, and the momentum carries |
+| **X while gliding** | Big launch upward (Jak lifts his nose into it) |
+| **R1** | Turbo — while flapping, or on top of a glide |
+| **Square** in the air | Superhero landing: an accelerating dive (hold Square to dive harder) ending in a Dark Bomb blast that scales with the drop. No fall damage from any height |
 
-LuminarLight made changes that allow placing custom navmesh into Jak 1 levels. This will hopefully become useless one day, if proper navmesh support is ever added to OpenGOAL.
+The camera follows Jak's height while flying and rises for a better view while gliding.
 
-The navmesh system in Jak II is more advanced, I haven't managed to figure it out yet.
+### In Haven City
 
-### Getting Started
+Haven only keeps a couple of districts loaded at once, so flight there is tuned to it: each district has
+its own ceiling (just above the highest place you can stand), the turbo is capped, and districts are
+loaded and shown ahead of you as you fly — including over the walls between them.
 
-Please keep in mind that you are expected to be familiar with custom levels and GOAL. Still, I tried to make things as understandable as possible.
+## Options
 
-I would recommend copying an existing navmesh as a start. You can use the inspect method I made. The actor whose navmesh you want to copy must be loaded. Example:
-`(inspect (-> (the-as entity-actor (entity-by-name "snow-bunny-55")) nav-mesh))`
+At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.gc` (off by default):
 
-You should change the origin and bounds, depending on where you want to place your navmesh.
+- `*tf-opt-all-light-powers?*` — every Light Jak power and endless light eco from any save
+- `*tf-opt-unlock-extras?*` — every Secrets-menu item and OpenGOAL PC cheat unlocked
 
-I usually just remove the nodes, because I do not understand it and things seem fine without it. But keep in mind that every navmesh that is in the game has at least one node.
+## What this mod changes
 
-We do not understand route, but it is needed - otherwise game will crash. If you copy an existing navmesh, the route data is copied correctly. But since we don't understand it, for fully custom navmesh we can never have proper route data. Correct route data is essential if you want to take advantage of gap triangles (where enemies jump).
+- `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo and landing
+- `goal_src/jak3/engine/camera/cam-master.gc` — the camera tracks Jak's height while flying
+- `goal_src/jak3/engine/level/region.gc` — city district triggers are tested ahead of a flying Jak
 
-You can make multiple enemies use the same navmesh. To do this, create the navmesh through code for the first actor, like in the example. And for the other actors, add a lump that tells the game to use another actor's navmesh. Reference is by aid. Example: `"nav-mesh-actor": ["uint32", 40000]`. Tip: You can do the same thing with paths, using the `path-actor` lump.
+## Not included
 
-If the game crashes when you approach a custom navmesh, make sure you added `:custom-hacky? #t` to your custom navmesh definition. If that is there, then check if the actor has a path. It needs a path.
+This mod contains only code. Everything it shows or plays — Light Jak, his wings, sounds, the Dark Bomb
+effects — comes from your own copy of *Jak 3*. HD texture packs are not part of it; install your
+favourite pack through the OpenGOAL launcher as usual.
 
-If something is still unclear, please look at the code. I added a lot of comments.
+## Credits
 
-### Final Words
+- Built on the [OG-Mod-Base](https://github.com/OpenGOAL-Mods/OG-Mod-Base) template and the
+  [OpenGOAL](https://github.com/open-goal/jak-project) project.
+- *Jak 3* © Naughty Dog / Sony Interactive Entertainment. This is a fan project.
 
-I am not an expert at decompiling, so my methods were not the most efficient. But with a lot of time, I managed to figure things out. There are probably people who could do this a lot better than me. Hopefully it will happen.
-
-Also, I know my inspect method is not perfect. But it is very tedious to write such a thing, so I just included what we really need. And I think the nodes part could use a cleanup.
-
-I am happy if anyone finds this useful. But I have a request: If you learn more about navmeshes, especially things that would benefit other modders as well, please let me know. And maybe we will add it to this branch.
-
-*~~Luminar Light*
+OpenGOAL's own readme is kept in [README.opengoal.md](README.opengoal.md).
