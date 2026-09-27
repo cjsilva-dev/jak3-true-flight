@@ -29,11 +29,13 @@ At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.
 - `*tf-opt-all-light-powers?*` — every Light Jak power and endless light eco from any save
 - `*tf-opt-unlock-extras?*` — every Secrets-menu item and OpenGOAL PC cheat unlocked
 
+What these unlock is saved (in your save file and PC settings) and stays unlocked if you switch the
+option off again. With both off — the default — the mod writes nothing to your save.
+
 ## What this mod changes
 
 - `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo and landing
 - `goal_src/jak3/engine/camera/cam-master.gc` — the camera tracks Jak's height while flying
-- `goal_src/jak3/engine/level/region.gc` — city district triggers are tested ahead of a flying Jak
 
 ## Not included
 
@@ -47,4 +49,4 @@ favourite pack through the OpenGOAL launcher as usual.
   [OpenGOAL](https://github.com/open-goal/jak-project) project.
 - *Jak 3* © Naughty Dog / Sony Interactive Entertainment. This is a fan project.
 
-OpenGOAL's own readme is kept in [README.opengoal.md](README.opengoal.md).
+The mod base's own readme (with OpenGOAL setup links) is kept in [README.opengoal.md](README.opengoal.md).

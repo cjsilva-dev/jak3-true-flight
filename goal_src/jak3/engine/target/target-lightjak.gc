@@ -1365,6 +1365,7 @@
                                      (= v1-50 'target-lightjak-swoop-falling)
                                      (= v1-50 'target-lightjak-freeze)
                                      (= v1-50 'target-lightjak-regen)
+                                     (= v1-50 'target-lightjak-slam) ;; TRUE FLIGHT: don't drop light form mid-slam
                                      )
                                  )
                                )
@@ -2000,8 +2001,8 @@
 
 ;; === TRUE FLIGHT: launch tilt (as Dark Flight) ===
 ;; A flap out of a glide lifts Jak's nose for the launch, then eases back. Callback on his root
-;; bone "main" (node 3, otherwise unused); re-attached every frame in true-flight-lift so
-;; hot-reloads take effect (the bone keeps whatever function object it was given).
+;; bone "main" (node 3, otherwise unused); attached every frame in true-flight-lift (the bone
+;; keeps whatever function object it was given), and it unhooks itself once Jak is upright.
 (define *tf-glide-pitch*  0.0)    ;; body tilt while gliding (Light Jak's glide pose is upright)
 (define *tf-launch-pitch* -27.0)  ;; launch: 27 degrees nose-up from the glide (same change as Jak 2's 72 -> 45)
 (define *tf-pitch-step*   8.0)    ;; degrees per frame toward the target
@@ -2026,11 +2027,14 @@
               )
           )
     )
-  (when (!= *tf-body-pitch* 0.0)
-    (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 1.0 0.0 0.0 (degrees *tf-body-pitch*))))
-      (quaternion*! (-> tq quat) r (-> tq quat))
+  (if (!= *tf-body-pitch* 0.0)
+      (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 1.0 0.0 0.0 (degrees *tf-body-pitch*))))
+        (quaternion*! (-> tq quat) r (-> tq quat))
+        )
+      (if (not (or *tf-launching?* *tf-tilt-glide?*)) ;; upright and nothing to tilt for: unhook
+          (set! (-> node param0) #f)                   ;; (true-flight-lift re-attaches it in flight)
+          )
       )
-    )
   (cspace<-parented-transformq-joint! node tq)
   (none)
   )
@@ -2041,10 +2045,10 @@
 ;; === TRUE FLIGHT: CITY MODE ===
 ;; Haven only keeps ~2 districts loaded and swaps them via trigger regions, and its visibility
 ;; data was built for street level -- so in the city: a soft altitude ceiling (absolute height,
-;; never height-above-ground), and the region triggers are tested ahead of Jak while flying.
+;; never height-above-ground), and the districts ahead are loaded by location (below).
 ;; absolute-Y ceilings per district = highest STANDABLE surface + 8 m, at least 40 m (so the
 ;; zoomer lanes are always reachable). Surfaces from a downward-ray survey of each district's
-;; collision (tf-survey, 2026-09-24): port 64.9, ctygen 51.8, slumc 46.7, indb 43.8, slumb 30.6,
+;; collision: port 64.9, ctygen 51.8, slumc 46.7, indb 43.8, slumb 30.6,
 ;; inda 26.8, sluma 24.9. Main city visibility breaks from ~46 m, above which only a tower is.
 (define *tf-ceil-port*      (meters 73))
 (define *tf-ceil-gen*       (meters 60))
@@ -2053,7 +2057,7 @@
 (define *tf-ceil-default*   (meters 40))  ;; sluma, slumb, inda and the rest of the city
 (define *tf-city-ceiling*   (meters 0))   ;; this frame's ceiling (set from the above)
 (define *tf-city-soft*      (meters 6))  ;; climbing fades out over this band below it
-(define *tf-city-lookahead* 1.0)         ;; seconds of flight ahead the district triggers see
+(define *tf-city-lookahead* 1.0)         ;; seconds of flight ahead the district streamer looks
 (define *tf-in-city?* #f)
 
 ;; Load by location: twice a second while flying in the city, load the district you're heading for.
@@ -2064,7 +2068,58 @@
 (define *tf-stream-timer* 0)
 (define *tf-city-districts* '(ctysluma ctyslumb ctyslumc ctygenb ctyinda ctyindb ctyport ctyfarma ctyfarmb))
 
+;; A district within this far of Jak (from the edge of its bounding sphere) is never unloaded.
+(define *tf-stream-keep-dist* (meters 60))
+(define *tf-stream-cooldown* (seconds 2)) ;; after a load request, give the game this long before another
+(define *tf-stream-last* (the-as time-frame 0))
+
+(defun tf-district-at ((pos vector))
+  "The loaded district at pos: an active district whose boxes contain it (the game's own test), else
+   the nearest active district by bounding sphere. Geometric -- current-level comes from vis-nick
+   and the gate scripts, which flight skips over, so it can name the district Jak has already left."
+  (let ((best (the-as level #f))
+        (bestd 0.0)
+        (best-in #f)
+        )
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (= (-> lv status) 'active) (member (-> lv name) *tf-city-districts*))
+          (let ((d (vector-vector-distance (-> lv bsp bsphere) pos))
+                (in (if (-> lv inside-boxes?) #t #f))
+                )
+            (when (or (not best) (and in (not best-in)) (and (= in best-in) (< d bestd)))
+              (set! best lv)
+              (set! bestd d)
+              (set! best-in in)
+              )
+            )
+          )
+        )
+      )
+    best
+    )
+  )
+
+(defun tf-district-near? ((name symbol) (pos vector) (dist float))
+  "Is the loaded level NAME within DIST of pos (measured from the edge of its bounding sphere)?"
+  (let ((near #f))
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (= (-> lv name) name) (or (= (-> lv status) 'active) (= (-> lv status) 'loaded)))
+          (if (< (- (vector-vector-distance (-> lv bsp bsphere) pos) (-> lv bsp bsphere w)) dist)
+              (set! near #t)
+              )
+          )
+        )
+      )
+    near
+    )
+  )
+
 (defbehavior true-flight-city-stream target ()
+  "Safety rules: only districts are ever swapped (never ctywide or the car/pedestrian levels);
+   never the one Jak is in or near, nor one still loading; one request per couple of seconds, so
+   the game's own gate scripts aren't fought."
   (set! *tf-stream-timer* (+ *tf-stream-timer* 1))
   (when (< 15 *tf-stream-timer*)
     (set! *tf-stream-timer* 0)
@@ -2111,36 +2166,79 @@
                 (set! have #t)
                 )
             )
-          (when (not have)
-            ;; keep everything except one district we're not standing in; add the target
-            (let ((names (new 'stack-no-clear 'array 'symbol 10))
-                  (n 0)
-                  (dropped #f)
+          (when (and (not have) (< *tf-stream-cooldown* (- (current-time) *tf-stream-last*)))
+            ;; swap out the farthest loaded district that Jak isn't in or near; if there's none,
+            ;; don't add anything (adding without dropping can overfill the city's level heap)
+            (let ((here (tf-district-at (-> self control trans)))
+                  (drop (the-as symbol #f))
+                  (dropd 0.0)
                   )
               (dotimes (i 10)
-                (set! (-> names i) #f)
-                )
-              (dotimes (i 10)
                 (let ((nm (-> *load-state* want i name)))
-                  (when nm
-                    (if (and (not dropped)
+                  (when (and nm
                              (member nm *tf-city-districts*)
-                             (!= nm (-> self current-level name))
+                             (not (and here (= nm (-> here name))))
+                             (not (tf-district-near? nm (-> self control trans) *tf-stream-keep-dist*))
                              )
-                        (set! dropped #t)
-                        (when (< n 9)
-                          (set! (-> names n) nm)
-                          (set! n (+ n 1))
+                    (let ((d 0.0)
+                          (ready #f) ;; still-loading districts (the one just asked for) are never dropped
+                          )
+                      (dotimes (j LEVEL_MAX)
+                        (let ((lv (-> *level* level j)))
+                          (when (and (= (-> lv name) nm) (or (= (-> lv status) 'active) (= (-> lv status) 'loaded)))
+                            (set! d (vector-vector-distance (-> lv bsp bsphere) (-> self control trans)))
+                            (set! ready #t)
+                            )
                           )
                         )
+                      (when (and ready (or (not drop) (< dropd d)))
+                        (set! drop nm)
+                        (set! dropd d)
+                        )
+                      )
                     )
                   )
                 )
-              (set! (-> names n) target)
-              (want-levels *load-state* (the-as (pointer symbol) names))
+              (when drop
+                (let ((names (new 'stack-no-clear 'array 'symbol 10))
+                      (n 0)
+                      )
+                  (dotimes (i 10)
+                    (set! (-> names i) #f)
+                    )
+                  (dotimes (i 10)
+                    (let ((nm (-> *load-state* want i name)))
+                      (when (and nm (!= nm drop) (< n 9))
+                        (set! (-> names n) nm)
+                        (set! n (+ n 1))
+                        )
+                      )
+                    )
+                  (set! (-> names n) target)
+                  (want-levels *load-state* (the-as (pointer symbol) names))
+                  (set! *tf-stream-last* (current-time))
+                  )
+                )
               )
             )
-          (want-display-level *load-state* target 'display)
+          )
+        )
+      )
+    ;; show the loaded districts we want (display is normally switched on by regions at the gates,
+    ;; which flight skips: a loaded district sat undrawn behind a dark cliff)
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (= (-> lv status) 'loaded) (not (-> lv display?)) (member (-> lv name) *tf-city-districts*))
+          (let ((wanted #f))
+            (dotimes (j 10)
+              (if (= (-> *load-state* want j name) (-> lv name))
+                  (set! wanted #t)
+                  )
+              )
+            (if wanted
+                (want-display-level *load-state* (-> lv name) 'display)
+                )
+            )
           )
         )
       )
@@ -2149,7 +2247,7 @@
   )
 
 (defbehavior true-flight-city target ()
-  "Per frame while flying: city detection, district look-ahead, altitude ceiling."
+  "Per frame while flying: city detection, district streaming, altitude ceiling."
   (set! *tf-in-city?* (if (and (-> self current-level)
                                (string-prefix= "cty" (symbol->string (-> self current-level name)))
                                )
@@ -2158,21 +2256,14 @@
                           )
         )
   (when *tf-in-city?*
-    ;; Show every city district that's already loaded. Districts are displayed by trigger regions
-    ;; near their borders, which flight skips past -- a loaded district sat undrawn behind a dark
-    ;; cliff (found in Jak 2, 2026-09-24).
-    (dotimes (i LEVEL_MAX)
-      (let ((lv (-> *level* level i)))
-        (if (and (= (-> lv status) 'loaded)
-                 (not (-> lv display?))
-                 (string-prefix= "cty" (symbol->string (-> lv name)))
-                 )
-            (want-display-level *load-state* (-> lv name) 'display)
-            )
-        )
-      )
     (true-flight-city-stream)
-    (let ((nm (symbol->string (-> self current-level name))))
+    ;; the ceiling of the district Jak is actually over (current-level can lag behind in flight)
+    (let ((nm (symbol->string (let ((d (tf-district-at (-> self control trans))))
+                                (if d (-> d name) (-> self current-level name))
+                                )
+                              )
+              )
+          )
       (set! *tf-city-ceiling* (cond
                                 ((string-prefix= "ctyport" nm) *tf-ceil-port*)
                                 ((string-prefix= "ctygen" nm) *tf-ceil-gen*)
@@ -2185,10 +2276,6 @@
     )
   (cond
     (*tf-in-city?*
-      (let ((tv (-> self control transv)))
-        (set-vector! *tf-region-lookahead*
-                     (* (-> tv x) *tf-city-lookahead*) 0.0 (* (-> tv z) *tf-city-lookahead*) 1.0)
-        )
       (when (< 0.0 *tf-city-ceiling*)
         (let ((above (- (-> self control trans y) (- *tf-city-ceiling* *tf-city-soft*)))
               (vs (-> self control transv y))
@@ -2204,9 +2291,6 @@
             )
           )
         )
-      )
-    (else
-      (vector-reset! *tf-region-lookahead*)
       )
     )
   (none)
@@ -2272,8 +2356,8 @@
   )
 
 (defbehavior true-flight-lift target ()
-  "Per-frame while flying: floaty gravity, no light-jak timeout, higher camera."
-  (set! (-> self fact lightjak-effect-time) (+ (current-time) (seconds 20)))
+  "Per-frame while flying: floaty gravity, higher camera. (Light form is kept up by the
+   keep-alive state list in target-lightjak-process, not by the effect timer.)"
   (set! *true-flight-cam?* #t) ;; camera follows Jak's height (see cam-master.gc)
   (set! *tf-launching?* (< (current-time) *tf-launch-until*))
   (set! (-> self node-list data 3 param0) true-flight-main-joint)
@@ -2305,9 +2389,8 @@
 ;; into forward speed, so letting go of the climb at a peak swoops you forward. Speed eases
 ;; back toward a cruise speed slowly (momentum); R1 while gliding = turbo (fly nearly level,
 ;; accelerate to 90 m/s; the extra speed carries after release). The stick steers. X still flaps; keep holding L1 and you glide again after the flap.
-;; Globals (not defconstant) so they can be retuned with a hot reload.
+;; Tuning values are globals so they can be changed live from the REPL.
 (define *tf-glide-sink*       (meters 3))   ;; glide descent rate, m/s
-(define *tf-glide-dive-sink*  (meters 12))  ;; descent rate while diving (R1)
 (define *tf-glide-cruise*     (meters 18))  ;; speed a glide settles toward
 (define *tf-glide-max*        (meters 45))  ;; top speed without turbo
 (define *tf-glide-turbo-accel* (meters 40)) ;; R1 while gliding = turbo ("superman"), m/s^2
@@ -2316,7 +2399,6 @@
 (define *tf-city-turbo-accel*  (meters 25)) ;; glide turbo inside the city (as Jak 2)
 (define *tf-city-turbo-max*    (meters 50))
 (define *tf-glide-accel*      (meters 10))  ;; build-up toward cruise, m/s^2
-(define *tf-glide-dive-accel* (meters 14))  ;; build-up while diving, m/s^2
 (define *tf-glide-convert*    0.8)          ;; share of shed fall speed that becomes forward speed
 (define *tf-glide-catch*      (meters 30))  ;; how hard a steep fall levels out, m/s^2
 (define *tf-glide-drag*       0.25)         ;; per-second pull of excess speed back to cruise
@@ -2338,8 +2420,6 @@
 ;; are #f outside Dark Jak and crashed the game. 66 flop-down-loop, 67 flop-down-land,
 ;; 500 lightjak-freeze-land, 483 lightjak-get-on-land, 497 lightjak-swoop-land.
 (define *tf-slam-dive-anim* 65)   ;; flop-down: the ground-pound flip, played once and held
-(define *tf-slam-dive-frame* -1.0) ;; >=0: hold that frame instead
-(define *tf-slam-dive-loop?* #f)   ;; loop the dive anim (faster with speed) instead of playing it once
 (define *tf-slam-brace-time* 0.15) ;; seconds before touchdown to swing upright into the landing pose
 (define *tf-slam-braced?* #f)
 (define *tf-slam-land-anim* 500) ;; lightjak-freeze-land, played on impact (slower = heavier for big drops)
@@ -2351,14 +2431,9 @@
 (define *tf-slam-blast-scale* 0.0)
 (define *tf-slam-bomb-cur* (new 'static 'array float 1)) ;; growing collision radius (the bomb helper takes a pointer)
 (define *tf-glide-speed* 0.0)
-(define *tf-glide-pose* 1)       ;; 0 swoop1, 1 swoop2, 2 swoop-fall, 3 swoop-fall-loop
-(define *tf-glide-frame* 0.0)
-(define *tf-glide-tuning?* #f)   ;; D-pad picks the pose while gliding + readout; #f once chosen
-(define *tf-glide-sway*   3.0)   ;; frames the pose sways either side of the chosen frame
-(define *tf-glide-sway-rate* 131.0) ;; sway speed (65536 = one cycle per tick; 131 ~ 0.6 Hz)
 (define *tf-glide-cam-min* (meters 4)) ;; camera height above Jak while gliding
 (define *tf-glide-cam-max* (meters 8))
-(define *tf-glide-loop-rate* 0.6) ;; >0: loop the pose's full animation at this rate (at cruise speed)
+(define *tf-glide-loop-rate* 0.6) ;; the glide animation's loop rate at cruise speed
 (define *tf-glide-rate-min* 0.4)   ;; flap rate range; it scales with glide speed / cruise
 (define *tf-glide-rate-max* 1.6)
 
@@ -2485,62 +2560,15 @@
   )
 
 (defbehavior true-flight-glide-pose target ()
-  "Hold the glide pose. While tuning: D-pad left/right = animation, up/down = frame."
-  (when *tf-glide-tuning?*
-    (let ((pad (-> self control cpad number)))
-      (when (cpad-pressed? pad right)
-        (set! *tf-glide-pose* (mod (+ *tf-glide-pose* 1) 4))
-        (set! *tf-glide-frame* 0.0)
-        )
-      (when (cpad-pressed? pad left)
-        (set! *tf-glide-pose* (mod (+ *tf-glide-pose* 3) 4))
-        (set! *tf-glide-frame* 0.0)
-        )
-      (if (cpad-pressed? pad up)
-          (set! *tf-glide-frame* (+ *tf-glide-frame* 1.0))
-          )
-      (if (cpad-pressed? pad down)
-          (set! *tf-glide-frame* (fmax 0.0 (+ *tf-glide-frame* -1.0)))
-          )
+  "Hold the glide pose: Light Jak's swoop2 flap cycle, looped faster the faster you glide (so an
+   R1 dive flaps harder). The animation is only set when it changes (every frame was choppy)."
+  (if (!= (ja-group) jakb-lightjak-swoop2-ja)
+      (ja :group! jakb-lightjak-swoop2-ja :num! (identity 0.0))
       )
-    )
-  ;; switch animation only when the pick changes (re-setting the group every frame was choppy)
-  (let ((want (case *tf-glide-pose*
-                ((0) jakb-lightjak-swoop1-ja)
-                ((1) jakb-lightjak-swoop2-ja)
-                ((2) jakb-lightjak-swoop-fall-ja)
-                (else jakb-lightjak-swoop-fall-loop-ja)
-                )
-              )
-        )
-    (if (!= (ja-group) want)
-        (ja :group! want :num! (identity *tf-glide-frame*))
-        )
-    )
-  (set! *tf-glide-frame* (fmin *tf-glide-frame* (the float (+ -1 (ja-num-frames 0)))))
-  (if (< 0.0 *tf-glide-loop-rate*)
-      ;; full flap cycle, faster the faster you glide (so an R1 dive flaps harder)
-      (ja :num! (loop! (fmax *tf-glide-rate-min*
-                             (fmin *tf-glide-rate-max* (* *tf-glide-loop-rate* (/ *tf-glide-speed* *tf-glide-cruise*)))
-                             )
-                       )
-          )
-      ;; sway gently around the chosen frame so the wings ride the air instead of freezing
-      (ja :num! (identity (fmax 0.0 (fmin (the float (+ -1 (ja-num-frames 0)))
-                                          (+ *tf-glide-frame*
-                                             (* *tf-glide-sway* (sin (* *tf-glide-sway-rate* (the float (current-time))))))
-                                          )
-                                )
-                          )
-          )
-      )
-  (if *tf-glide-tuning?*
-      (format *stdcon* "~%~%glide pose ~D frame ~D/~D   speed ~,,1f m/s~%"
-              *tf-glide-pose*
-              (the int *tf-glide-frame*)
-              (+ -1 (ja-num-frames 0))
-              (* 0.00024414062 *tf-glide-speed*)
-              )
+  (ja :num! (loop! (fmax *tf-glide-rate-min*
+                         (fmin *tf-glide-rate-max* (* *tf-glide-loop-rate* (/ *tf-glide-speed* *tf-glide-cruise*)))
+                         )
+                   )
       )
   (none)
   )
@@ -2616,7 +2644,6 @@
       (remove-setting! 'string-spline-accel)
       )
     (set! *true-flight-cam?* #f) ;; TRUE FLIGHT MOD (flight states set it again every frame)
-    (vector-reset! *tf-region-lookahead*) ;; district triggers back on Jak himself
     (set! *tf-launching?* #f)
     (set! *tf-tilt-glide?* #f)
     (target-exit)
@@ -2862,8 +2889,17 @@
 
 (defstate target-lightjak-slam (target)
   :event (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
-    ;; the dark bomb's own handler, so the blast registers hits
-    ((-> target-darkjak-bomb0 event) proc argc message block)
+    (case message
+      (('swim 'attack 'attack-or-shove)
+       ;; unlike the bomb's handler (which ignores these), a slam into water swims and a slam into
+       ;; lava or dark eco hurts, like any other landing
+       (target-dangerous-event-handler proc argc message block)
+       )
+      (else
+        ;; the dark bomb's own handler, so the blast registers hits
+        ((-> target-darkjak-bomb0 event) proc argc message block)
+        )
+      )
     )
   :enter (behavior ()
     (set-time! (-> self state-time))
@@ -2890,9 +2926,11 @@
     ;; the engine clamps every fall to gravity-max (40 m/s) -- lift it or the plunge stays floaty
     ;; (:exit restores the standard value)
     (set! (-> self control dynam gravity-max) (+ (meters 10) *tf-slam-boost-max*))
-    ;; no fall damage from any height, and keep light form up
+    ;; no fall damage from any height
     (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
-    (set! (-> self fact lightjak-effect-time) (+ (current-time) (seconds 20)))
+    (if (not (focus-test? self light)) ;; light form ended anyway (e.g. out of eco): just fall
+        (go target-falling #f)
+        )
     (set! *true-flight-cam?* #t)
     )
   :code (behavior ()
@@ -2930,12 +2968,6 @@
       (cond
         (*tf-slam-braced?*
           (ja :num! (identity 0.0))
-          )
-        ((>= *tf-slam-dive-frame* 0.0)
-         (ja :num! (identity *tf-slam-dive-frame*))
-         )
-        (*tf-slam-dive-loop?*
-          (ja :num! (loop! (lerp-scale 1.0 2.5 *tf-slam-impact* *tf-slam-speed* *tf-slam-max*)))
           )
         (else
           (ja :num! (seek!))
