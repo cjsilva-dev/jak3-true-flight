@@ -5,6 +5,9 @@
 ;; name in dgo: target
 ;; dgos: GAME
 
+;; TRUE FLIGHT: Dark Jak flight (defined in target-lightjak.gc)
+(define-extern true-flight-dark-takeoff (function none :behavior target))
+
 ;; DECOMP BEGINS
 
 (defbehavior target-falling-trans target ((arg0 symbol) (arg1 time-frame) (arg2 symbol))
@@ -1373,6 +1376,7 @@
              )
         (go target-lightjak-swoop 1.2)
         )
+    (true-flight-dark-takeoff) ;; TRUE FLIGHT: Dark Jak takes off on the double jump too
     (when (= (-> self control jump-kind) 'launch)
       enter-state
       (let ((a0-21 (-> self control unknown-dword07))

@@ -1326,6 +1326,7 @@
     (target-exit)
     )
   :trans (behavior ()
+    (true-flight-hit-trans) ;; TRUE FLIGHT: shot while flying = flinch in the air, then fly on
     (when (= *cheat-mode* 'debug)
       (when (and (not *pause-lock*) (cpad-hold? (-> self control cpad number) r2))
         (set-time! (-> self control time-of-last-debug-heal))

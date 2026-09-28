@@ -956,6 +956,15 @@
           (reset (-> self skel top-anim))
           )
         (send-event (ppointer->process (-> self sidekick)) 'cleanup)
+        ;; TRUE FLIGHT: Dark Jak borrows Light Jak's wings, whose model and animations live in the
+        ;; light set -- they have to go before that set is unloaded
+        (when (and (= (-> self ext-anim) (target-anim light))
+                   (nonzero? (-> self lightjak))
+                   (-> self lightjak wings)
+                   )
+          (deactivate (ppointer->process (-> self lightjak wings)))
+          (set! (-> self lightjak wings) (the-as (pointer wings) #f))
+          )
         (unload-from-heap *anim-manager* (-> gp-0 heap))
         (unlink-shaders-in-heap *texture-page-dir* (-> gp-0 heap))
         )

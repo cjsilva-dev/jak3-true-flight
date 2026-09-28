@@ -1296,8 +1296,191 @@
 ;; Extras that change the normal game. Off for release; set to #t for a sandbox build.
 (define *tf-opt-all-light-powers?* #f) ;; every Light Jak power + endless light eco from any save
 (define *tf-opt-unlock-extras?*    #f) ;; every Secrets-menu item and OpenGOAL PC cheat unlocked (still toggled in the menus)
+(define *tf-opt-all-dark-powers?*  #f) ;; Dark Jak + all his powers + Unlimited Dark Jak from any save (to try Dark Jak flight)
+(define *tf-opt-quiet-debug?*      #f) ;; dev: in a -debug boot, hide the debug text overlay and mouse cursor
+
+;; ======================= DARK JAK FLIGHT =======================
+;; Dark Jak flies with Light Jak's wings and flight (glowing dark-eco purple instead of white).
+;; Jak 3 streams one set of Jak's form animations at a time, and the wings (model and animations)
+;; are only in the light set -- so while Dark Jak flies, the light set is swapped in, and a moment
+;; after he's done flying the dark set comes back. The game already falls back to Jak's normal
+;; animations whenever the dark set isn't loaded, so Dark Jak moves normally in between.
+;; Takeoff: the double jump as Dark Jak (as Light Jak). Flight itself = the True Flight states.
+(define *tf-dark-mode?*     #f)  ;; the light set is borrowed for Dark Jak's flight
+(define *tf-dark-pending?*  #f)  ;; takeoff asked for, waiting for the light set to load
+(define *tf-dark-ask-time*  (the-as time-frame 0))
+(define *tf-dark-last-fly*  (the-as time-frame 0))  ;; last frame Dark Jak was in a flight state
+(define *tf-dark-folding?*  #f)
+(define *tf-dark-fold-after*  (seconds 0.3))  ;; done flying this long: fold the wings
+(define *tf-dark-return-after* (seconds 0.6)) ;; and this long: back to the dark animations (his dark
+                                              ;; attacks need them; an attack press on the ground
+                                              ;; brings them back at once)
+(define *tf-dark-takeoff?* #f)      ;; the next flap is a Dark Jak takeoff
+(define *tf-dark-takeoff-frame* 0.0) ;; ... which starts on the full-spread flap at this frame
+(define *tf-dark-slam?* #f)         ;; this slam is Dark Jak's: the real dark bomb
+(define *tf-dark-slam-swap* (seconds 0.15)) ;; into the dive: fold the wings, bring the dark set back
+(define *tf-dark-slam-diving?* #f)
+
+(define-extern tf-dark-fx (function sparticle-launch-group int time-frame none :behavior target)) ;; (below)
+
+(defbehavior true-flight-dark? target ()
+  (and (focus-test? self dark) (nonzero? (-> self darkjak))))
+
+(defbehavior true-flight-dark-flying? target ()
+  (let ((s (-> self state name)))
+    (or (= s 'target-lightjak-swoop)
+        (= s 'target-lightjak-swoop-again)
+        (= s 'target-lightjak-swoop-falling)
+        (= s 'target-lightjak-slam)
+        )
+    )
+  )
+
+(defbehavior true-flight-dark-takeoff target ()
+  "Called when Jak double-jumps: as Dark Jak, ask for the light set; true-flight-dark-process takes
+   off as soon as it's in."
+  (when (and (cpad-pressed? (-> self control cpad number) x)
+             (true-flight-dark?)
+             (nonzero? (-> self lightjak)) ;; (always allocated at init; guard anyway)
+             (zero? (-> self darkjak latch-out-time))
+             (= (-> self fact shield-level) 0.0)
+             (time-elapsed? (-> self control last-time-of-stuck) (the-as time-frame (-> *TARGET-bank* stuck-timeout)))
+             (not (logtest? (-> self target-flags) (target-flags prevent-attack)))
+             (not (logtest? (-> self control current-surface flags) (surface-flag no-attack no-feet)))
+             (not (focus-test? self dead hit grabbed under-water edge-grab pole flut tube board pilot mech carry indax teleporting))
+             )
+    (set! *tf-dark-mode?* #t)
+    (set! *tf-dark-pending?* #t)
+    (set! *tf-dark-folding?* #f)
+    (set-time! *tf-dark-ask-time*)
+    (set! (-> self pending-ext-anim) (target-anim light))
+    )
+  (none)
+  )
+
+(defbehavior true-flight-dark-drop-wings target ()
+  (when (nonzero? (-> self lightjak))
+    (let ((w (ppointer->process (-> self lightjak wings))))
+      (when w
+        (deactivate w)
+        (set! (-> self lightjak wings) (the-as (pointer wings) #f))
+        )
+      )
+    )
+  ;; the wing texture is shared with Light Jak's wings: put its tint back
+  (tf-wing-tint (-> *tf-light-wing-color* x) (-> *tf-light-wing-color* y) (-> *tf-light-wing-color* z))
+  (none)
+  )
+
+(defbehavior true-flight-dark-return target ()
+  "Dark Jak's flight is over: drop the wings and give him his dark animations back -- but only if
+   the light set is still ours to swap (another mode may have asked for its own set meanwhile)."
+  (true-flight-dark-drop-wings)
+  (set! *tf-dark-folding?* #f)
+  (set! *tf-dark-pending?* #f)
+  (set! *tf-dark-mode?* #f)
+  (if (and (true-flight-dark?)
+           (or (= (-> self ext-anim) (target-anim light)) (= (-> self pending-ext-anim) (target-anim light)))
+           )
+      (set! (-> self pending-ext-anim) (target-anim dark))
+      )
+  (none)
+  )
+
+(define *tf-fly-time* (the-as time-frame 0)) ;; last frame in a flight state
+(define *tf-safe-fall?* #f)                  ;; flew since last standing on something: no fall damage
+(define *tf-hit-frames* 0)                   ;; (see true-flight-hit-trans)
+(define *tf-hit-flying?* #f)                 ;; the current hit came while flying
+
+(defbehavior true-flight-dark-process target ()
+  "Every frame: take off once the light set is in; after landing fold the wings and give the dark
+   set back. (Also, for every form: no fall damage between a flight and the next landing.)"
+  (when (!= (-> self state name) 'target-hit)
+    (set! *tf-hit-frames* 0)
+    ;; a hit in flight: the game ends target-hit early when Jak doesn't move (the flinch holds him
+    ;; still) and hands him to the landing/falling states in mid-air -- he'd drop. Fly on instead.
+    (when *tf-hit-flying?*
+      (set! *tf-hit-flying?* #f)
+      (when (and (or (= (-> self state name) 'target-hit-ground) (= (-> self state name) 'target-falling))
+                 (not (logtest? (-> self control status) (collide-status on-surface on-ground)))
+                 (focus-test? self light dark)
+                 (not (focus-test? self dead))
+                 (or (focus-test? self light) (= (-> self ext-anim) (target-anim light)))
+                 )
+        (set-time! *tf-fly-time*)
+        (go target-lightjak-swoop-falling #f)
+        )
+      )
+    )
+  (cond
+    ((logtest? (-> self control status) (collide-status on-surface on-ground))
+     (set! *tf-safe-fall?* #f)
+     )
+    (*tf-safe-fall?*
+      (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
+      )
+    )
+  (when *tf-dark-mode?*
+    (cond
+      ((or (not (true-flight-dark?)) (zero? (-> self lightjak)))
+       ;; Dark Jak ended (his own end-mode already asked for the normal set)
+       (true-flight-dark-return)
+       )
+      (*tf-dark-pending?*
+       (let ((s (-> self state name)))
+         (cond
+           ((or (logtest? (-> self control status) (collide-status on-surface))
+                (not (or (= s 'target-double-jump) (= s 'target-jump) (= s 'target-falling) (= s 'target-attack-air)))
+                (time-elapsed? *tf-dark-ask-time* (seconds 1.5))
+                )
+            ;; landed (or got hit etc.) before the set was in: no takeoff this time, dark set back now
+            (true-flight-dark-return)
+            )
+           ((= (-> self ext-anim) (target-anim light))
+            (set! *tf-dark-pending?* #f)
+            (set-time! *tf-dark-last-fly*)
+            ;; wings still folding from the last flight can't reopen: start fresh ones
+            (if *tf-dark-folding?*
+                (true-flight-dark-drop-wings)
+                )
+            (set! *tf-dark-folding?* #f)
+            (set! *tf-dark-takeoff?* #t)
+            (set! *tf-dark-wing-burst?* #t) ;; the wings burst out (sparks, lightning, flare)
+            (sound-play "djak-pnch-swing" :pitch -0.5)
+            ;; ... in Dark Jak's own transformation burst, with a jolt
+            (tf-dark-fx group-darkjak-transform 6 (seconds 0))
+            (tf-dark-fx group-darkjak-smack-hit 6 (seconds 0))
+            (activate! *camera-smush-control* 500.0 15 45 1.0 0.9 (-> *display* camera-clock))
+            (go target-lightjak-swoop 1.2)
+            )
+           )
+         )
+       )
+      ((or (true-flight-dark-flying?) (not (time-elapsed? *tf-fly-time* (seconds 0.5)))) ;; (or a flinch)
+       (set-time! *tf-dark-last-fly*)
+       (if (not *tf-dark-slam?*) ;; the dark bomb dive brings the dark set back
+           (set! (-> self pending-ext-anim) (target-anim light))
+           )
+       )
+      ((or (time-elapsed? *tf-dark-last-fly* *tf-dark-return-after*)
+           ;; on the ground and going for a dark attack: don't make him wait
+           (and (logtest? (-> self control status) (collide-status on-surface on-ground))
+                (cpad-pressed? (-> self control cpad number) square circle triangle)
+                )
+           )
+       (true-flight-dark-return)
+       )
+      ((and (not *tf-dark-folding?*) (time-elapsed? *tf-dark-last-fly* *tf-dark-fold-after*))
+       (set! *tf-dark-folding?* #t)
+       (send-event (ppointer->process (-> self lightjak wings)) 'end-mode)
+       )
+      )
+    )
+  (none)
+  )
 
 (defbehavior target-lightjak-process target ()
+  (true-flight-dark-process) ;; TRUE FLIGHT: Dark Jak flight
   ;; TRUE FLIGHT: fly as long as you like. The game's own Unlimited Light Jak secret comes bought and
   ;; switched ON in any save that doesn't have it yet (new games included); after that it's the
   ;; player's to switch off in the Secrets menu, and the save remembers. (Same as Dark Flight.)
@@ -1309,6 +1492,23 @@
   (when *tf-opt-all-light-powers?*
     (logior! (-> self game features) (game-feature lightjak lightjak-regen lightjak-swoop lightjak-freeze lightjak-shield))
     (logior! (-> self game secrets) (game-secrets endless-light))
+    )
+  ;; TRUE FLIGHT option (dev): a debug boot without the debug overlays
+  (when (and *tf-opt-quiet-debug?* (= *cheat-mode* 'debug))
+    (set! *cheat-mode* #f)
+    (set! *disable-mouse* #t)
+    )
+  ;; TRUE FLIGHT option: Dark Jak and all his powers from any save, Unlimited Dark Jak bought and on,
+  ;; and a full dark eco meter (turning into Dark Jak needs some)
+  (when *tf-opt-all-dark-powers?*
+    (logior! (-> self game features) (game-feature darkjak darkjak-smack darkjak-bomb0 darkjak-bomb1 darkjak-tracking darkjak-invinc))
+    (when (not (logtest? (-> *game-info* purchase-secrets) (game-secrets endless-dark)))
+      (logior! (-> *game-info* purchase-secrets) (game-secrets endless-dark))
+      (logior! (-> self game secrets) (game-secrets endless-dark))
+      )
+    (if (< (-> self game eco-pill-dark) (-> *FACT-bank* eco-pill-dark-max-default))
+        (set! (-> self game eco-pill-dark) (-> *FACT-bank* eco-pill-dark-max-default))
+        )
     )
   ;; TRUE FLIGHT option: every Secrets-menu item bought (still toggled in the menu); not the
   ;; gun-upgrade bits that share this bitfield. Every frame, so loading a save can't take them away.
@@ -2006,6 +2206,233 @@
 (defconstant TF-GRAVITY      81920.0)      ;; ~20 m/s^2 (vanilla flap window used 163840)
 (defconstant TF-GRAVITY-MAX  163840.0)
 
+;; === DARK JAK FLIGHT: its own feel ===
+;; Light Jak floats; Dark Jak surges. Fewer, harder flaps that throw him forward, heavier between
+;; flaps, a glide that sinks faster and cuts sharper, a hunched predatory posture, dark sounds, and
+;; R1 turns the boost into a ram that hits whatever he flies through.
+(define *tf-dark-flap-impulse* (meters 17))  ;; per flap (Light: 12)
+(define *tf-dark-climb-cap*    (meters 24))  ;; (Light: 20)
+(define *tf-dark-flap-surge*   (meters 10))  ;; forward throw per flap
+(define *tf-dark-flap-cooldown* (seconds 0.5)) ;; between flaps (Light: 0.35)
+(define *tf-dark-gravity*      110592.0)     ;; ~27 m/s^2 between flaps (Light: 20)
+(define *tf-dark-glide-sink*   (meters 5))   ;; (Light: 3)
+(define *tf-dark-glide-cruise* (meters 22))  ;; (Light: 18)
+(define *tf-dark-glide-pitch*  30.0)         ;; leans forward into the glide, degrees (Light: upright)
+(define *tf-dark-hunch*        25.0)         ;; chest hunched forward while flying, degrees
+(define *tf-dark-hunch-now*    0.0)
+(define *tf-dark-ram-scale*    0.07)         ;; ram hit sphere, as a share of the dark bomb's 30 m
+
+(define *tf-dark-swoop-mods* (let ((m (copy *lightjak-swoop-mods* 'global)))
+                               (set! (-> m name) 'dark-swoop)
+                               (set! (-> m transv-max) (meters 26))
+                               (set! (-> m target-speed) (meters 26))
+                               (set! (-> m turnv) 163840.0)
+                               m
+                               )
+  )
+
+(defun true-flight-dark-chest-joint ((node cspace) (tq transformq))
+  "Hunches Dark Jak's chest forward while he flies; eases back and unhooks itself after."
+  (let ((want (if (and *tf-dark-mode?* *true-flight-cam?*) *tf-dark-hunch* 0.0)))
+    (set! *tf-dark-hunch-now* (if (< *tf-dark-hunch-now* want)
+                                  (fmin want (+ *tf-dark-hunch-now* 2.0))
+                                  (fmax want (- *tf-dark-hunch-now* 2.0))
+                                  )
+          )
+    )
+  (cond
+    ((!= *tf-dark-hunch-now* 0.0)
+     (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 1.0 0.0 0.0 (degrees *tf-dark-hunch-now*))))
+       (quaternion*! (-> tq quat) r (-> tq quat))
+       )
+     )
+    ((not *tf-dark-mode?*)
+     (set! (-> node param0) #f)
+     )
+    )
+  (cspace<-parented-transformq-joint! node tq)
+  (none)
+  )
+
+(defbehavior true-flight-flap-sound target ()
+  (if *tf-dark-mode?*
+      (sound-play "djak-pnch-swing" :pitch -0.35) ;; a heavy dark whoosh, not Light Jak's chime
+      (sound-play "ltjak-flap")
+      )
+  (none)
+  )
+
+(defbehavior true-flight-dark-flap target ()
+  "Right after a flap's lift: Dark Jak surges forward and the wings flare (and often crackle)."
+  (when *tf-dark-mode?*
+    (set! *tf-dark-wing-flare* 1.0)
+    (if (rand-vu-percent? 0.5)
+        (set! *tf-dark-wing-zap?* #t)
+        )
+    (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
+      (set! (-> fwd y) 0.0)
+      (vector-normalize! fwd 1.0)
+      (vector+float*! (-> self control transv) (-> self control transv) fwd *tf-dark-flap-surge*)
+      )
+    )
+  (none)
+  )
+
+;; ---- hit in flight (Light and Dark): flinch in the air, then fly on (as Dark Flight in Jak 2) ----
+(define *tf-hit-stagger* 18)    ;; frames of in-air flinch (~0.3 s)
+
+(defbehavior true-flight-hit-trans target ()
+  "From target-hit's :trans. The frame count lets the state's :code apply the damage (and go to
+   target-death if it's fatal) before we leave."
+  (if (zero? *tf-hit-frames*)
+      (set! *tf-hit-flying?* (not (time-elapsed? *tf-fly-time* (seconds 0.2))))
+      )
+  (set! *tf-hit-frames* (+ *tf-hit-frames* 1))
+  (when (and *tf-hit-flying?*
+             (focus-test? self light dark)
+             (not (focus-test? self dead))
+             (not (logtest? (-> self control status) (collide-status on-surface on-ground)))
+             )
+    (let* ((up (-> self control dynam gravity-normal))
+           (vs (vector-dot up (-> self control transv)))
+           )
+      (if (< vs 0.0) ;; hang in the air through the flinch
+          (vector+float*! (-> self control transv) (-> self control transv) up (- vs))
+          )
+      )
+    (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
+    (when (< *tf-hit-stagger* *tf-hit-frames*)
+      (set! *tf-hit-frames* 0)
+      (set! *tf-hit-flying?* #f)
+      (set-time! *tf-fly-time*)
+      ;; back to flying -- the flight states play Light Jak's animations, so only if that set is in
+      (if (or (focus-test? self light) (= (-> self ext-anim) (target-anim light)))
+          (go target-lightjak-swoop-falling #f)
+          (go target-falling #f)
+          )
+      )
+    )
+  (none)
+  )
+
+(define-extern *tf-gliding?* symbol)   ;; (glide state, defined further down)
+(define-extern *tf-in-city?* symbol)   ;; (city mode, defined further down)
+(define-extern *tf-glide-speed* float)
+(define *tf-dark-dash-speed*    (meters 55))    ;; R1 dash: lunge speed
+(define *tf-dark-dash-city-speed* (meters 45))  ;; ... in the city (the districts can't stream faster)
+(define *tf-dark-dash-time*     (seconds 0.3))  ;; how long the lunge lasts
+(define *tf-dark-dash-cooldown* (seconds 0.6))
+(define *tf-dark-dash-start*    (the-as time-frame 0))
+(define *tf-dark-dashing?*      #f)
+
+;; the dash: no steering or drag while it lasts (the normal air control pulled the lunge straight
+;; back to stick speed within a few frames -- all that was left was the rumble)
+(define *tf-dark-dash-mods* (let ((m (copy *lightjak-swoop-fast-mods* 'global)))
+                              (set! (-> m name) 'dark-dash)
+                              (set! (-> m seek0) 0.0)
+                              (set! (-> m seek90) 0.0)
+                              (set! (-> m seek180) 0.0)
+                              (set! (-> m fric) 0.0)
+                              m
+                              )
+  )
+
+(defbehavior tf-dark-fx target ((group sparticle-launch-group) (joint int) (dur time-frame))
+  "Spawn one of Dark Jak's effects on his bone JOINT (it follows him)."
+  (vector<-cspace! (-> *launch-matrix* trans) (-> self node-list data joint))
+  (if (logtest? (-> group flags) (sp-group-flag sp13))
+      (part-tracker-spawn part-tracker-subsampler :to self :group group :duration dur :target self :mat-joint joint)
+      (part-tracker-spawn part-tracker :to self :group group :duration dur :target self :mat-joint joint)
+      )
+  (none)
+  )
+
+(defbehavior true-flight-dark-ram target ()
+  "R1 as Dark Jak = a dash attack: a level lunge forward in a streak of sparks and lightning, with
+   a small dark-bomb hit sphere that hits whatever he flies through. (Holding R1 after it still
+   boosts, as for Light Jak.)"
+  ;; (Light Jak dashes too: the same lunge and rumble, in a shower of light instead, and harmless)
+  (set! *tf-dark-dashing?* (not (time-elapsed? *tf-dark-dash-start* *tf-dark-dash-time*)))
+  (when (and (or (and *tf-dark-mode?* (true-flight-dark?)) (focus-test? self light))
+             (cpad-pressed? (-> self control cpad number) r1)
+             (!= (-> self state name) 'target-lightjak-slam)
+             (time-elapsed? *tf-dark-dash-start* *tf-dark-dash-cooldown*)
+             )
+    (set-time! *tf-dark-dash-start*)
+    (set! *tf-dark-dashing?* #t)
+    (cpad-set-buzz! (-> *cpad-list* cpads 0) 1 180 (seconds 0.15))
+    (cond
+      (*tf-dark-mode?*
+        (target-start-attack) ;; a fresh attack, so everything can be hit again
+        (sound-play "djak-bolt-throw")
+        (sound-play "djak-pnch-swing" :pitch -0.2)
+        (set! *tf-dark-wing-zap?* #t)
+        (set! *tf-dark-wing-flare* 1.5)
+        ;; Dark Jak's own smack effects: the hit burst, and the glowing trail behind him for the lunge
+        (tf-dark-fx group-darkjak-smack-hit 6 (seconds 0))
+        (tf-dark-fx group-darkjak-smack-trail 6 *tf-dark-dash-time*)
+        (activate! *camera-smush-control* 300.0 15 30 1.0 0.9 (-> *display* camera-clock))
+        )
+      (else
+        ;; Light Jak: a spray of glitter (from the freeze burst, minus its blue cloud and its star
+        ;; flash, which both hung in the air like a puff left behind), then a streak of stars
+        (sound-play "ltjak-flap" :pitch 0.4)
+        (let ((p (vector<-cspace! (new 'stack-no-clear 'vector) (-> self node-list data 6))))
+          (launch-particles (-> *part-id-table* 657) p) ;; white glitter (no star flash: it left a white blob)
+          )
+        (activate! *camera-smush-control* 150.0 15 30 1.0 0.9 (-> *display* camera-clock))
+        )
+      )
+    (if *tf-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
+        (set! *tf-glide-speed* (fmax *tf-glide-speed* (if *tf-in-city?* *tf-dark-dash-city-speed* *tf-dark-dash-speed*)))
+        )
+    )
+  (when *tf-dark-dashing?*
+    (when (not *tf-gliding?*)
+      (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
+        (set! (-> fwd y) 0.0)
+        (vector-normalize! fwd (if *tf-in-city?* *tf-dark-dash-city-speed* *tf-dark-dash-speed*))
+        (set! (-> self control transv x) (-> fwd x))
+        (set! (-> self control transv z) (-> fwd z))
+        (set! (-> self control transv y) (fmax 0.0 (-> self control transv y))) ;; a level lunge
+        )
+      )
+    (when (not *tf-dark-mode?*) ;; Light Jak: a streak of glittering stars (fairy dust) -- only the
+      ;; crisp stars: soft glows and the dense glitter burst read as a white cloud
+      (dotimes (i 16)
+        (launch-particles (-> *part-id-table* 646) (process-drawable-random-point! self (new 'stack-no-clear 'vector)))
+        )
+      )
+    (when *tf-dark-mode?*
+    ;; the dark streak
+    (dotimes (i 4)
+      (launch-particles (-> *part-id-table* 173) (process-drawable-random-point! self (new 'stack-no-clear 'vector)))
+      )
+    (if (rand-vu-percent? 0.4)
+        (process-drawable-shock-effect self (-> *lightning-spec-id-table* 7) lightning-probe-callback
+                                       (-> *part-id-table* 187) 0 0 40960.0
+                                       )
+        )
+    ;; the hit
+    (let ((prev (-> self control danger-mode)))
+      (set! (-> self control bomb-scale) *tf-dark-ram-scale*)
+      (target-danger-set! 'bomb #f)
+      (update-transforms (-> self control))
+      (let ((a1 (new 'stack-no-clear 'overlaps-others-params)))
+        (set! (-> a1 options) (overlaps-others-options))
+        (set! (-> a1 collide-with-filter) (the-as collide-spec -1))
+        (set! (-> a1 tlist) *touching-list*)
+        (find-overlapping-shapes (-> self control) a1)
+        )
+      (set! (-> self control bomb-scale) 0.0)
+      (target-danger-set! prev #f)
+      (update-transforms (-> self control))
+      )
+      )
+    )
+  (none)
+  )
+
 ;; === TRUE FLIGHT: launch tilt (as Dark Flight) ===
 ;; A flap out of a glide lifts Jak's nose for the launch, then eases back. Callback on his root
 ;; bone "main" (node 3, otherwise unused); attached every frame in true-flight-lift (the bone
@@ -2022,7 +2449,7 @@
 (defun true-flight-main-joint ((node cspace) (tq transformq))
   (let ((want (cond
                 (*tf-launching?* *tf-launch-pitch*)
-                (*tf-tilt-glide?* *tf-glide-pitch*)
+                (*tf-tilt-glide?* (if *tf-dark-mode?* *tf-dark-glide-pitch* *tf-glide-pitch*))
                 (else 0.0)
                 )
               )
@@ -2301,7 +2728,10 @@
         )
     (let ((f (if (cpad-hold? (-> self control cpad number) l1)
                  (fmin *tf-glide-flap-cap* (+ *tf-glide-flap-impulse* (fmax 0.0 vspeed)))
-                 (fmin TF-CLIMB-CAP (+ TF-FLAP-IMPULSE (fmax 0.0 vspeed)))
+                 (if *tf-dark-mode?* ;; Dark Jak: fewer, harder flaps
+                     (fmin *tf-dark-climb-cap* (+ *tf-dark-flap-impulse* (fmax 0.0 vspeed)))
+                     (fmin TF-CLIMB-CAP (+ TF-FLAP-IMPULSE (fmax 0.0 vspeed)))
+                     )
                  )
              )
           )
@@ -2351,22 +2781,35 @@
   "Per-frame while flying: floaty gravity, higher camera. (Light form is kept up by the
    keep-alive state list in target-lightjak-process, not by the effect timer.)"
   (set! *true-flight-cam?* #t) ;; camera follows Jak's height (see cam-master.gc)
+  (set-time! *tf-fly-time*)   ;; (a hit right now is a hit in flight)
+  (set! *tf-hit-frames* 0)
+  (set! *tf-safe-fall?* #t)   ;; no fall damage until Jak next stands on something
   (set! *tf-launching?* (< (current-time) *tf-launch-until*))
   (set! (-> self node-list data 3 param0) true-flight-main-joint)
+  (if *tf-dark-mode?* ;; Dark Jak hunches (chest, node 6)
+      (set! (-> self node-list data 6 param0) true-flight-dark-chest-joint)
+      )
   (true-flight-city)
-  (set! (-> self control dynam gravity-length) TF-GRAVITY)
+  (set! (-> self control dynam gravity-length) (if *tf-dark-mode?* *tf-dark-gravity* TF-GRAVITY))
   (set! (-> self control dynam gravity-max) TF-GRAVITY-MAX)
   ;; Flying is never a "fall": keep the fall origin under Jak so landing from any height is a
   ;; normal landing instead of target-hit-ground-hard (which can kill you from 30m+).
   (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
   ;; Hold R1 to fly fast -- only while flapping (the glide has its own turbo). In the plain fall
   ;; after you stop flapping, R1 used to fling Jak off into the distance.
+  (true-flight-dark-ram) ;; Dark Jak's R1 dash
   (set! (-> self control mod-surface)
-        (if (and (cpad-hold? (-> self control cpad number) r1)
-                 (!= (-> self state name) 'target-lightjak-swoop-falling)
-                 )
-            (if *tf-in-city?* *lightjak-swoop-city-fast-mods* *lightjak-swoop-fast-mods*)
-            *lightjak-swoop-mods*
+        (if (or *tf-dark-dashing?*
+                (and (cpad-hold? (-> self control cpad number) r1)
+                     (!= (-> self state name) 'target-lightjak-swoop-falling)
+                     )
+                )
+            (cond
+              (*tf-dark-dashing?* *tf-dark-dash-mods*)
+              (*tf-in-city?* *lightjak-swoop-city-fast-mods*)
+              (else *lightjak-swoop-fast-mods*)
+              )
+            (if *tf-dark-mode?* *tf-dark-swoop-mods* *lightjak-swoop-mods*)
             )
         )
   ;; NOTE: an earlier version damped your climb near the ceiling, but the ceiling is measured
@@ -2462,6 +2905,13 @@
                                 )
         )
 
+(define *tf-dark-glide-mods* (let ((m (copy *tf-glide-mods* 'global)))
+                               (set! (-> m name) 'dark-glide)
+                               (set! (-> m turnv) 98304.0) ;; cuts sharper than Light's glide
+                               m
+                               )
+  )
+
 (defbehavior true-flight-glide target ()
   "Per-frame in swoop-falling. While L1 is held: glide physics. Returns #t while gliding."
   (cond
@@ -2484,7 +2934,8 @@
              (fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control)))
              (dt (seconds-per-frame))
              (diving? (cpad-hold? (-> self control cpad number) r1)) ;; = turbo
-             (sink (if diving? *tf-glide-turbo-sink* *tf-glide-sink*))
+             (sink (if diving? *tf-glide-turbo-sink* (if *tf-dark-mode?* *tf-dark-glide-sink* *tf-glide-sink*)))
+             (cruise (if *tf-dark-mode?* *tf-dark-glide-cruise* *tf-glide-cruise*))
              (speed-before *tf-glide-speed*)
              )
         (set! *tf-tilt-glide?* #t)
@@ -2522,12 +2973,12 @@
           (diving?
             (set! *tf-glide-speed* (+ *tf-glide-speed* (* (if *tf-in-city?* *tf-city-turbo-accel* *tf-glide-turbo-accel*) dt)))
             )
-          ((< *tf-glide-speed* *tf-glide-cruise*)
-           (set! *tf-glide-speed* (fmin *tf-glide-cruise* (+ *tf-glide-speed* (* *tf-glide-accel* dt))))
+          ((< *tf-glide-speed* cruise)
+           (set! *tf-glide-speed* (fmin cruise (+ *tf-glide-speed* (* *tf-glide-accel* dt))))
            )
           (else
             (set! *tf-glide-speed*
-                  (- *tf-glide-speed* (* (- *tf-glide-speed* *tf-glide-cruise*) *tf-glide-drag* dt))
+                  (- *tf-glide-speed* (* (- *tf-glide-speed* cruise) *tf-glide-drag* dt))
                   )
             )
           )
@@ -2544,7 +2995,7 @@
         (vector-normalize! fwd *tf-glide-speed*)
         (vector+! tv fwd (vector-float*! (new-stack-vector0) up vs))
         (set! (-> self control dynam gravity-length) *tf-glide-gravity*)
-        (set! (-> self control mod-surface) *tf-glide-mods*)
+        (set! (-> self control mod-surface) (if *tf-dark-mode?* *tf-dark-glide-mods* *tf-glide-mods*))
         #t
         )
       )
@@ -2582,7 +3033,7 @@
         (set! (-> self lightjak wings) (process-spawn wings :init wings-init 'open :name "wings" :to self))
         )
     (when (and (-> self next-state) (= (-> self next-state name) 'target-lightjak-swoop))
-      (if (not (logtest? (-> self lightjak stage) (lightjak-stage ls1)))
+      (if (not (or (logtest? (-> self lightjak stage) (lightjak-stage ls1)) *tf-dark-mode?*)) ;; TRUE FLIGHT: Dark Jak flies free
           (send-event self 'get-pickup (pickup-type eco-pill-light) (- (-> *FACT-bank* lightjak-swoop-inc)))
           )
       (send-event (ppointer->process (-> self lightjak wings)) 'open)
@@ -2671,9 +3122,15 @@
     0
     )
   :code (behavior ((arg0 float))
-    (sound-play "ltjak-flap")
+    (true-flight-flap-sound) ;; TRUE FLIGHT (Dark Jak has his own)
     (ja-channel-push! 1 (seconds 0.05))
-    (ja-no-eval :group! jakb-lightjak-swoop1-ja :num! (seek!) :frame-num 0.0)
+    ;; TRUE FLIGHT: a Dark Jak takeoff skips the unfurl (swoop1) and bursts straight into the
+    ;; full-spread flap (swoop2); the wings copy whichever Jak plays
+    (if *tf-dark-takeoff?*
+        (ja-no-eval :group! jakb-lightjak-swoop2-ja :num! (seek!) :frame-num *tf-dark-takeoff-frame*)
+        (ja-no-eval :group! jakb-lightjak-swoop1-ja :num! (seek!) :frame-num 0.0)
+        )
+    (set! *tf-dark-takeoff?* #f)
     (let ((v1-16 (new-stack-vector0)))
       (let ((f0-5 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
         0.0
@@ -2690,11 +3147,12 @@
           )
         )
       )
+    (true-flight-dark-flap) ;; TRUE FLIGHT: Dark Jak surges forward
     (until (ja-done? 0)
       (suspend)
       (ja :num! (seek!))
       ;; TRUE FLIGHT MOD: cooldown 0.5 -> 0.35 so flaps can stack
-      (if (and (cpad-pressed? (-> self control cpad number) x) (time-elapsed? (-> self state-time) (seconds 0.35)))
+      (if (and (cpad-pressed? (-> self control cpad number) x) (time-elapsed? (-> self state-time) (if *tf-dark-mode?* *tf-dark-flap-cooldown* (seconds 0.35))))
           (go
             target-lightjak-swoop-again
             (* 0.0033333334 (the float (- (-> self control sliding-start-time) (-> self state-time))))
@@ -2712,7 +3170,7 @@
   :exit (-> target-lightjak-swoop exit)
   :trans (-> target-lightjak-swoop trans)
   :code (behavior ((arg0 float))
-    (sound-play "ltjak-flap")
+    (true-flight-flap-sound) ;; TRUE FLIGHT (Dark Jak has his own)
     (let ((f30-0 44.0))
       (let ((a1-1 6))
         (let ((v1-4 (ja-group)))
@@ -2780,11 +3238,12 @@
           )
         )
       )
+    (true-flight-dark-flap) ;; TRUE FLIGHT: Dark Jak surges forward
     (until (ja-done? 0)
       (suspend)
       (ja :num! (seek!))
       (if (and (cpad-pressed? (-> self control cpad number) x)
-               (time-elapsed? (-> self state-time) (seconds 0.35)) ;; TRUE FLIGHT MOD
+               (time-elapsed? (-> self state-time) (if *tf-dark-mode?* *tf-dark-flap-cooldown* (seconds 0.35))) ;; TRUE FLIGHT MOD
                (and (>= (ja-aframe-num 0) 54.0) 0)
                )
           (go
@@ -2828,10 +3287,20 @@
         )
     (target-falling-trans
       (the-as symbol (-> self control unknown-spool-anim00))
-      (the-as time-frame (if (= (-> self control unknown-spool-anim00) #f)
-                             0
+      ;; TRUE FLIGHT: no "stuck" check while flying free. Hovering at the top of a climb barely moves
+      ;; Jak, which the check took for being wedged: it forced a landing in mid-air and he dropped.
+      ;; (Still checked when he's actually touching a wall or a surface.)
+      (the-as time-frame (cond
+                           ((not (logtest? (-> self control status) (collide-status touch-surface touch-wall)))
+                            -1
+                            )
+                           ((= (-> self control unknown-spool-anim00) #f)
+                            0
+                            )
+                           (else
                              (the-as int (/ (the-as int (-> *TARGET-bank* stuck-time)) 2))
                              )
+                           )
               )
       #f
       )
@@ -2879,6 +3348,49 @@
     )
   )
 
+(defbehavior tf-dark-bomb-flash process-drawable ()
+  "The dark bomb blast's flash (white, to purple, to nothing), as target-darkjak-bomb0 does it."
+  (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 1.0)
+  (let ((f (ja-aframe-num 0)))
+    (cond
+      ((>= 10.0 f)
+       (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
+       )
+      ((>= 20.0 f)
+       (vector-lerp! (-> self draw color-emissive)
+                     (new 'static 'vector :x 1.0 :y 1.0 :z 1.0 :w 1.0)
+                     (new 'static 'vector :x 0.5 :z 1.0 :w 1.0)
+                     (lerp-scale 0.0 1.0 f 10.0 20.0)
+                     )
+       )
+      (else
+        (vector-lerp! (-> self draw color-emissive)
+                      (new 'static 'vector :x 0.5 :z 1.0 :w 1.0)
+                      (new 'static 'vector :w 1.0)
+                      (lerp-scale 0.0 1.0 f 20.0 30.0)
+                      )
+        )
+      )
+    )
+  (none)
+  )
+
+(defbehavior tf-slam-land-anim target ((blend time-frame))
+  "Start the landing pose: Dark Jak's bomb-land (468) for a dark slam once the dark set is back,
+   else Light Jak's freeze-land, else the plain ground-pound landing (always loaded)."
+  (cond
+    ((and *tf-dark-slam?* (true-flight-slam-anim 468 blend))
+     #t
+     )
+    ((true-flight-slam-anim *tf-slam-land-anim* blend)
+     #t
+     )
+    (else
+      (true-flight-slam-anim 67 blend)
+      )
+    )
+  )
+
 (defstate target-lightjak-slam (target)
   :event (behavior ((proc process) (argc int) (message symbol) (block event-message-block))
     (case message
@@ -2898,6 +3410,16 @@
     (set! *tf-gliding?* #f)
     (set! *tf-flap-holding?* #f)
     (set! (-> self control mod-surface) *lightjak-swoop-mods*)
+    ;; Dark Jak: the real dark bomb -- fold the wings (the dark set comes back in :trans) and queue
+    ;; the bomb's sound
+    (set! *tf-dark-slam?* (and *tf-dark-mode?* (true-flight-dark?)))
+    (set! *tf-dark-slam-diving?* #f)
+    (when *tf-dark-slam?*
+      (send-event (ppointer->process (-> self lightjak wings)) 'end-mode)
+      (set! (-> self control unknown-sound-id00)
+            (add-process *gui-control* self (gui-channel jak-effect-1) (gui-action queue) "darkbom0" -99.0 0)
+            )
+      )
     ;; straight down, fast, keeping a little of the forward speed
     (let* ((up (-> self control dynam gravity-normal))
            (vs (vector-dot up (-> self control transv)))
@@ -2912,6 +3434,25 @@
     (set! (-> self control dynam gravity-length) (-> self control standard-dynamics gravity-length))
     (set! *true-flight-cam?* #f)
     (set! (-> self control bomb-scale) 0.0)
+    (when *tf-dark-slam?*
+      (set! *tf-dark-slam?* #f)
+      (set-action! *gui-control* (gui-action fade) (-> self control unknown-sound-id00) (gui-channel none) (gui-action none)
+                   (the-as string #f) (the-as (function gui-connection symbol) #f) (the-as process #f)
+                   )
+      ;; the flight is over: the dark set stays
+      (true-flight-dark-drop-wings)
+      (set! *tf-dark-mode?* #f)
+      (set! *tf-dark-folding?* #f)
+      (if (true-flight-dark?)
+          (set! (-> self pending-ext-anim) (target-anim dark))
+          )
+      )
+    ;; the dark bomb's hit handler can switch on its slow-motion clock; this slam doesn't run it
+    (when (nonzero? (-> self darkjak))
+      (set! (-> self darkjak clock-on) #f)
+      (set! (-> self darkjak clock-pos) 1.0)
+      (set! (-> self darkjak clock-vel) 0.0)
+      )
     (target-exit)
     )
   :trans (behavior ()
@@ -2920,8 +3461,11 @@
     (set! (-> self control dynam gravity-max) (+ (meters 10) *tf-slam-boost-max*))
     ;; no fall damage from any height
     (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
-    (if (not (focus-test? self light)) ;; light form ended anyway (e.g. out of eco): just fall
+    (if (not (focus-test? self light dark)) ;; light (or dark) form ended anyway (e.g. out of eco): just fall
         (go target-falling #f)
+        )
+    (if (and *tf-dark-slam?* (time-elapsed? (-> self state-time) *tf-dark-slam-swap*))
+        (set! (-> self pending-ext-anim) (target-anim dark))
         )
     (set! *true-flight-cam?* #t)
     )
@@ -2945,6 +3489,13 @@
         (vector+float*! (-> self control transv) (-> self control transv) up (- want vs))
         (set! *tf-slam-impact* (- want))
         )
+      ;; dark slam: once the dark set is back, dive in the dark bomb's plunge pose
+      (when (and *tf-dark-slam?* (not *tf-dark-slam-diving?*) (not *tf-slam-braced?*)
+                 (= (-> self ext-anim) (target-anim dark))
+                 (true-flight-slam-anim 467 (seconds 0.1))
+                 )
+        (set! *tf-dark-slam-diving?* #t)
+        )
       (suspend)
       ;; just before touchdown, swing upright into the landing pose (so he lands on his feet, not
       ;; his head). Height is only trusted near the ground: a probe miss high up reads 0.
@@ -2952,7 +3503,7 @@
         (when (and (not *tf-slam-braced?*)
                    (< 1024.0 h)
                    (< h (* *tf-slam-impact* *tf-slam-brace-time*))
-                   (true-flight-slam-anim *tf-slam-land-anim* (seconds 0.12))
+                   (tf-slam-land-anim (seconds 0.12))
                    )
           (set! *tf-slam-braced?* #t)
           )
@@ -2973,9 +3524,20 @@
       (activate! *camera-smush-control* (lerp 300.0 2400.0 k) 15 (the int (lerp 40.0 120.0 k)) 1.0 0.9 (-> *display* camera-clock))
       (set! *tf-slam-impact* k)
       )
-    (if (and (not *tf-slam-braced?*) (not (true-flight-slam-anim *tf-slam-land-anim* (seconds 0.05))))
+    (if (and (not *tf-slam-braced?*) (not (tf-slam-land-anim (seconds 0.05))))
         (go target-stance)
         )
+    ;; dark bomb-land: the fist hits the ground at aframe 35 -- the blast goes off there
+    (when (let ((g (ja-group))) (and *tf-dark-slam?* g (= g (-> self draw art-group data 468))))
+      (until (or (ja-done? 0) (>= (ja-aframe-num 0) 35.0))
+        (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
+        (suspend)
+        (ja :num! (seek! (ja-aframe 35.0 0) 1.5))
+        )
+      (set-action! *gui-control* (gui-action play) (-> self control unknown-sound-id00) (gui-channel none) (gui-action none)
+                   (the-as string #f) (the-as (function gui-connection symbol) #f) (the-as process #f)
+                   )
+      )
     ;; ---- the dark bomb blast (from target-darkjak-bomb0), radius scaled by the drop ----
     (set! *tf-slam-blast-scale* 0.0)
     (when *tf-slam-blast?*
@@ -2990,22 +3552,48 @@
         (vector-copy! (-> *launch-matrix* trans) pos)
         ;; Light Jak's own burst instead of the dark bomb's purple sparks (the rings stay the dark
         ;; bomb's: their purple is baked into the texture)
-        (if (logtest? (-> group-lightjak-freeze-burst flags) (sp-group-flag sp13))
-            (part-tracker-spawn part-tracker-subsampler :to *entity-pool* :group group-lightjak-freeze-burst)
+        (cond
+          (*tf-dark-slam?* ;; Dark Jak: the dark bomb's own purple burst
+            (if (logtest? (-> group-darkjak-bomb flags) (sp-group-flag sp13))
+                (part-tracker-spawn part-tracker-subsampler :to *entity-pool* :group group-darkjak-bomb)
+                (part-tracker-spawn part-tracker :to *entity-pool* :group group-darkjak-bomb)
+                )
+            )
+          ((logtest? (-> group-lightjak-freeze-burst flags) (sp-group-flag sp13))
+           (part-tracker-spawn part-tracker-subsampler :to *entity-pool* :group group-lightjak-freeze-burst)
+           )
+          (else
             (part-tracker-spawn part-tracker :to *entity-pool* :group group-lightjak-freeze-burst)
             )
-        (let ((ag (art-group-get-by-name *level* "skel-bomb-blast" (the-as (pointer level) #f))))
+          )
+        (when (not *tf-dark-slam?*) ;; Light Jak lands in a shower of light (the rings are the dark bomb's)
+          (dotimes (i 60)
+            (let ((sp (new 'stack-no-clear 'vector)))
+              (vector-copy! sp pos)
+              (+! (-> sp x) (* radius (meters 4) (rand-vu-float-range -1.0 1.0)))
+              (+! (-> sp y) (* (meters 3) (rand-vu)))
+              (+! (-> sp z) (* radius (meters 4) (rand-vu-float-range -1.0 1.0)))
+              (launch-particles (-> *part-id-table* 646) sp)
+              )
+            )
+          (vector-copy! (-> *launch-matrix* trans) pos)
+          (part-tracker-spawn part-tracker :to *entity-pool* :group group-lightjak-freeze-burst)
+          )
+        (let ((ag (the-as art-group (if *tf-dark-slam?* (art-group-get-by-name *level* "skel-bomb-blast" (the-as (pointer level) #f)) #f))))
           (when ag
             (let ((b (process-spawn manipy :init manipy-init pos (-> self entity) ag #f 0 :name "manipy" :to self :stack-size #x20000)))
               (when b
                 (send-event (ppointer->process b) 'anim-mode 'play1)
                 (send-event (ppointer->process b) 'anim "idle")
                 (set-vector! (-> (the-as process-drawable (-> b 0)) root scale) radius 1.0 radius 1.0)
+                (if *tf-dark-slam?* ;; the dark bomb's white-to-purple flash
+                    (send-event (ppointer->process b) 'trans-hook tf-dark-bomb-flash)
+                    )
                 )
               )
             )
           )
-        (let ((ag (art-group-get-by-name *level* "skel-generic-blast" (the-as (pointer level) #f))))
+        (let ((ag (the-as art-group (if *tf-dark-slam?* (art-group-get-by-name *level* "skel-generic-blast" (the-as (pointer level) #f)) #f))))
           (when ag
             (let ((b (process-spawn manipy :init manipy-init pos (-> self entity) ag #f 0 :name "manipy" :to self :stack-size #x20000)))
               (when b
