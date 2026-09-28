@@ -36,6 +36,7 @@ option off again. With both off — the default — the mod writes nothing to yo
 
 - `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo and landing
 - `goal_src/jak3/engine/camera/cam-master.gc` — the camera tracks Jak's height while flying
+- `goal_src/jak3/engine/level/region.gc` — while flying in the city, district triggers are tested a little ahead of Jak (at most 30 m)
 
 ## Not included
 

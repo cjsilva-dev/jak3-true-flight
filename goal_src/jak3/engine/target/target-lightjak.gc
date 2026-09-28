@@ -2068,58 +2068,44 @@
 (define *tf-stream-timer* 0)
 (define *tf-city-districts* '(ctysluma ctyslumb ctyslumc ctygenb ctyinda ctyindb ctyport ctyfarma ctyfarmb))
 
-;; A district within this far of Jak (from the edge of its bounding sphere) is never unloaded.
-(define *tf-stream-keep-dist* (meters 60))
-(define *tf-stream-cooldown* (seconds 2)) ;; after a load request, give the game this long before another
+;; While flying in the city, the region look-ahead (region.gc) makes the gate scripts load the
+;; district ahead; this streamer is the backup for walls with no gate trigger nearby.
+(define *tf-region-ahead-max* (meters 30)) ;; cap on the region look-ahead (it moves every trigger point)
+(define *tf-stream-cooldown* (seconds 1)) ;; after a load request, give the game this long before another
 (define *tf-stream-last* (the-as time-frame 0))
 
-(defun tf-district-at ((pos vector))
-  "The loaded district at pos: an active district whose boxes contain it (the game's own test), else
-   the nearest active district by bounding sphere. Geometric -- current-level comes from vis-nick
-   and the gate scripts, which flight skips over, so it can name the district Jak has already left."
-  (let ((best (the-as level #f))
-        (bestd 0.0)
-        (best-in #f)
-        )
+(defun tf-level-outside? ((name symbol) (pos vector))
+  "Is pos outside loaded level NAME's main geometry sphere (so it's safe to unload it)?
+   (inside-boxes? only checks a flag, and the city's bsp bsphere may be empty; the level's first
+   drawable tree's sphere is real geometry.)"
+  (let ((out #t))
     (dotimes (i LEVEL_MAX)
       (let ((lv (-> *level* level i)))
-        (when (and (= (-> lv status) 'active) (member (-> lv name) *tf-city-districts*))
-          (let ((d (vector-vector-distance (-> lv bsp bsphere) pos))
-                (in (if (-> lv inside-boxes?) #t #f))
+        (when (and (= (-> lv name) name)
+                   (or (= (-> lv status) 'active) (= (-> lv status) 'loaded))
+                   (-> lv bsp)
+                   (nonzero? (-> lv bsp drawable-trees))
+                   (< 0 (-> lv bsp drawable-trees length))
+                   )
+          (let* ((c (-> lv bsp drawable-trees trees 0 bsphere))
+                 (dx (- (-> pos x) (-> c x)))
+                 (dz (- (-> pos z) (-> c z)))
+                 )
+            (if (< (sqrtf (+ (* dx dx) (* dz dz))) (-> c w))
+                (set! out #f)
                 )
-            (when (or (not best) (and in (not best-in)) (and (= in best-in) (< d bestd)))
-              (set! best lv)
-              (set! bestd d)
-              (set! best-in in)
-              )
             )
           )
         )
       )
-    best
-    )
-  )
-
-(defun tf-district-near? ((name symbol) (pos vector) (dist float))
-  "Is the loaded level NAME within DIST of pos (measured from the edge of its bounding sphere)?"
-  (let ((near #f))
-    (dotimes (i LEVEL_MAX)
-      (let ((lv (-> *level* level i)))
-        (when (and (= (-> lv name) name) (or (= (-> lv status) 'active) (= (-> lv status) 'loaded)))
-          (if (< (- (vector-vector-distance (-> lv bsp bsphere) pos) (-> lv bsp bsphere w)) dist)
-              (set! near #t)
-              )
-          )
-        )
-      )
-    near
+    out
     )
   )
 
 (defbehavior true-flight-city-stream target ()
   "Safety rules: only districts are ever swapped (never ctywide or the car/pedestrian levels);
-   never the one Jak is in or near, nor one still loading; one request per couple of seconds, so
-   the game's own gate scripts aren't fought."
+   never the one the game says Jak is in, the one being loaded, one whose area Jak is over, or one
+   still loading; one request a second, so the game's own gate scripts aren't fought."
   (set! *tf-stream-timer* (+ *tf-stream-timer* 1))
   (when (< 15 *tf-stream-timer*)
     (set! *tf-stream-timer* 0)
@@ -2167,33 +2153,29 @@
                 )
             )
           (when (and (not have) (< *tf-stream-cooldown* (- (current-time) *tf-stream-last*)))
-            ;; swap out the farthest loaded district that Jak isn't in or near; if there's none,
-            ;; don't add anything (adding without dropping can overfill the city's level heap)
-            (let ((here (tf-district-at (-> self control trans)))
-                  (drop (the-as symbol #f))
+            ;; swap out the farthest loaded district Jak isn't in or over; if there's none, don't add
+            ;; anything (adding without dropping can overfill the city's level heap)
+            (let ((drop (the-as symbol #f))
                   (dropd 0.0)
                   )
               (dotimes (i 10)
                 (let ((nm (-> *load-state* want i name)))
                   (when (and nm
                              (member nm *tf-city-districts*)
-                             (not (and here (= nm (-> here name))))
-                             (not (tf-district-near? nm (-> self control trans) *tf-stream-keep-dist*))
+                             (!= nm target)
+                             (!= nm (-> self current-level name))
+                             (tf-level-outside? nm (-> self control trans))
                              )
-                    (let ((d 0.0)
-                          (ready #f) ;; still-loading districts (the one just asked for) are never dropped
-                          )
-                      (dotimes (j LEVEL_MAX)
-                        (let ((lv (-> *level* level j)))
-                          (when (and (= (-> lv name) nm) (or (= (-> lv status) 'active) (= (-> lv status) 'loaded)))
-                            (set! d (vector-vector-distance (-> lv bsp bsphere) (-> self control trans)))
-                            (set! ready #t)
+                    (dotimes (j LEVEL_MAX)
+                      (let ((lv (-> *level* level j)))
+                        (when (and (= (-> lv name) nm) (or (= (-> lv status) 'active) (= (-> lv status) 'loaded)))
+                          (let ((d (vector-vector-xz-distance (-> lv bsp drawable-trees trees 0 bsphere) (-> self control trans))))
+                            (when (or (not drop) (< dropd d))
+                              (set! drop nm)
+                              (set! dropd d)
+                              )
                             )
                           )
-                        )
-                      (when (and ready (or (not drop) (< dropd d)))
-                        (set! drop nm)
-                        (set! dropd d)
                         )
                       )
                     )
@@ -2258,12 +2240,7 @@
   (when *tf-in-city?*
     (true-flight-city-stream)
     ;; the ceiling of the district Jak is actually over (current-level can lag behind in flight)
-    (let ((nm (symbol->string (let ((d (tf-district-at (-> self control trans))))
-                                (if d (-> d name) (-> self current-level name))
-                                )
-                              )
-              )
-          )
+    (let ((nm (symbol->string (-> self current-level name))))
       (set! *tf-city-ceiling* (cond
                                 ((string-prefix= "ctyport" nm) *tf-ceil-port*)
                                 ((string-prefix= "ctygen" nm) *tf-ceil-gen*)
@@ -2276,6 +2253,14 @@
     )
   (cond
     (*tf-in-city?*
+      (let ((v (vector-float*! (new-stack-vector0) (-> self control transv) *tf-city-lookahead*)))
+        (set! (-> v y) 0.0)
+        (set! (-> v w) 0.0)
+        (if (< *tf-region-ahead-max* (vector-length v))
+            (vector-normalize! v *tf-region-ahead-max*)
+            )
+        (vector-copy! *tf-region-lookahead* v)
+        )
       (when (< 0.0 *tf-city-ceiling*)
         (let ((above (- (-> self control trans y) (- *tf-city-ceiling* *tf-city-soft*)))
               (vs (-> self control transv y))
