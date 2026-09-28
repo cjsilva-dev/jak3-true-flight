@@ -1298,6 +1298,13 @@
 (define *tf-opt-unlock-extras?*    #f) ;; every Secrets-menu item and OpenGOAL PC cheat unlocked (still toggled in the menus)
 
 (defbehavior target-lightjak-process target ()
+  ;; TRUE FLIGHT: fly as long as you like. The game's own Unlimited Light Jak secret comes bought and
+  ;; switched ON in any save that doesn't have it yet (new games included); after that it's the
+  ;; player's to switch off in the Secrets menu, and the save remembers. (Same as Dark Flight.)
+  (when (not (logtest? (-> *game-info* purchase-secrets) (game-secrets endless-light)))
+    (logior! (-> *game-info* purchase-secrets) (game-secrets endless-light))
+    (logior! (-> self game secrets) (game-secrets endless-light))
+    )
   ;; TRUE FLIGHT option: every Light Jak power and endless light eco from any save
   (when *tf-opt-all-light-powers?*
     (logior! (-> self game features) (game-feature lightjak lightjak-regen lightjak-swoop lightjak-freeze lightjak-shield))

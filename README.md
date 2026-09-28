@@ -22,6 +22,12 @@ Haven only keeps a couple of districts loaded at once, so flight there is tuned 
 its own ceiling (just above the highest place you can stand), the turbo is capped, and districts are
 loaded and shown ahead of you as you fly — including over the walls between them.
 
+## Unlimited Light Jak
+
+Jak 3's own *Secrets* menu item **Unlimited Light Jak** is unlocked and switched **on** in any save that
+doesn't have it yet, so you can fly as long as you like. Switch it off there if you'd rather manage
+light eco (each flap then uses some, as in the original game). It's saved with your game.
+
 ## Options
 
 At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.gc` (off by default):
