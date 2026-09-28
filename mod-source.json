@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "1.0.0",
+  "sourceName": "Dark Flight & True Flight",
+  "lastUpdated": "2026-09-28T01:45:20Z",
+  "mods": {
+    "dark-flight": {
+      "displayName": "Dark Flight",
+      "description": "Dark Jak grows wings and flies: flap, glide, turbo and a superhero-landing Dark Bomb. Two sets of wings: Metal Head (Metal Kor's) or Dark Angel (the Haven Forest pegasus), each with its own sounds. R3 switches them.",
+      "authors": [
+        "cjsilva-dev"
+      ],
+      "tags": [
+        "gameplay"
+      ],
+      "websiteUrl": "https://github.com/cjsilva-dev/jak2-dark-flight#readme",
+      "supportedGames": [
+        "jak2"
+      ],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishedDate": "2026-09-28T01:39:08Z",
+          "supportedGames": [
+            "jak2"
+          ],
+          "settings": {
+            "decompConfigOverride": "",
+            "shareVanillaSaves": false
+          },
+          "assets": {
+            "windows": "https://github.com/cjsilva-dev/jak2-dark-flight/releases/download/v0.1.0/windows-v0.1.0.zip",
+            "linux": "https://github.com/cjsilva-dev/jak2-dark-flight/releases/download/v0.1.0/linux-v0.1.0.tar.gz",
+            "macos": "https://github.com/cjsilva-dev/jak2-dark-flight/releases/download/v0.1.0/macos-intel-v0.1.0.tar.gz"
+          }
+        }
+      ],
+      "perGameConfig": {
+        "jak2": {
+          "coverArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/dark-flight-cover.png",
+          "thumbnailArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/dark-flight-thumbnail.png",
+          "releaseDate": "2026-09-28"
+        }
+      },
+      "externalLink": null
+    },
+    "true-flight": {
+      "displayName": "True Flight",
+      "description": "Light Jak really flies: stacking flaps, a momentum glide, a turbo and a superhero landing that sets off a Dark Bomb blast, with flight tuned for Haven City.",
+      "authors": [
+        "cjsilva-dev"
+      ],
+      "tags": [
+        "gameplay"
+      ],
+      "websiteUrl": "https://github.com/cjsilva-dev/jak3-true-flight#readme",
+      "supportedGames": [
+        "jak3"
+      ],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishedDate": "2026-09-28T01:45:20Z",
+          "supportedGames": [
+            "jak3"
+          ],
+          "settings": {
+            "decompConfigOverride": "",
+            "shareVanillaSaves": false
+          },
+          "assets": {
+            "windows": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.1.0/windows-v0.1.0.zip",
+            "linux": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.1.0/linux-v0.1.0.tar.gz",
+            "macos": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.1.0/macos-intel-v0.1.0.tar.gz"
+          }
+        }
+      ],
+      "perGameConfig": {
+        "jak3": {
+          "coverArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/true-flight-cover.png",
+          "thumbnailArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/true-flight-thumbnail.png",
+          "releaseDate": "2026-09-28"
+        }
+      },
+      "externalLink": null
+    }
+  }
+}
