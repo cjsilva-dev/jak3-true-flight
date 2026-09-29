@@ -1,0 +1,67 @@
+name: "Bug report"
+description: Something wrong with True Flight? Tell me here.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time! The more of this you fill in, the faster I can fix it.
+  - type: input
+    id: version
+    attributes:
+      label: Mod version
+      description: Shown next to True Flight in the OpenGOAL launcher's Mods list.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: What are you playing on?
+      options:
+        - Steam Deck
+        - Linux (other)
+        - Windows
+        - Mac
+    validations:
+      required: true
+  - type: dropdown
+    id: form
+    attributes:
+      label: Flying as
+      options:
+        - Light Jak
+        - Dark Jak
+        - Not flying / not sure
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead? Screenshots or a video clip help a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do I make it happen?
+      description: Where you were in the game and what you pressed, step by step.
+      placeholder: |
+        1. Went to ...
+        2. Flew up and pressed ...
+        3. ...
+  - type: dropdown
+    id: repeat
+    attributes:
+      label: Does it happen every time?
+      options:
+        - "Yes, every time"
+        - Sometimes
+        - Only happened once
+  - type: textarea
+    id: log
+    attributes:
+      label: Game log (especially for crashes)
+      description: |
+        Drag the newest log file in here. It's in your OpenGOAL install folder (the one you picked in the launcher):
+        `features/jak3/mods/Dark Flight & True Flight/true-flight/data/log/`
+        If the mod failed to install or build, the launcher's own logs help instead: Linux/Steam Deck `~/.local/share/OpenGOAL-Launcher/logs`, Windows `%APPDATA%\OpenGOAL-Launcher\logs`.
