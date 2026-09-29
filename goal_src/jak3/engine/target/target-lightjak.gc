@@ -1367,8 +1367,6 @@
         )
       )
     )
-  ;; the wing texture is shared with Light Jak's wings: put its tint back
-  (tf-wing-tint (-> *tf-light-wing-color* x) (-> *tf-light-wing-color* y) (-> *tf-light-wing-color* z))
   (none)
   )
 
@@ -2265,7 +2263,6 @@
 (defbehavior true-flight-dark-flap target ()
   "Right after a flap's lift: Dark Jak surges forward and the wings flare (and often crackle)."
   (when *tf-dark-mode?*
-    (set! *tf-dark-wing-flare* 1.0)
     (if (rand-vu-percent? 0.5)
         (set! *tf-dark-wing-zap?* #t)
         )
@@ -2367,7 +2364,6 @@
         (sound-play "djak-bolt-throw")
         (sound-play "djak-pnch-swing" :pitch -0.2)
         (set! *tf-dark-wing-zap?* #t)
-        (set! *tf-dark-wing-flare* 1.5)
         ;; Dark Jak's own smack effects: the hit burst, and the glowing trail behind him for the lunge
         (tf-dark-fx group-darkjak-smack-hit 6 (seconds 0))
         (tf-dark-fx group-darkjak-smack-trail 6 *tf-dark-dash-time*)

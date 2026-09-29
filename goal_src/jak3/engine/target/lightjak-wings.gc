@@ -7,34 +7,13 @@
 
 (define-extern wings-ragdoll-proc-init-by-other (function ragdoll-proc object :behavior wings-ragdoll-proc))
 
-;; TRUE FLIGHT: the wings' glow comes from an animated texture (lightjak-wings, built from the
-;; u-src/v-src layers). Its source textures are replaced with recolorable versions (custom_assets
-;; texture_replacements/level-default-water): tinted cyan (0 1 1) they are exactly Light Jak's
-;; originals; Dark Jak tints them his own color. Drawn additively, so darker = more see-through.
-(define *tf-light-wing-color* (new 'static 'vector :y 1.0 :z 1.0 :w 1.0))
-(define *tf-dark-wing-color* (new 'static 'vector :x 1.0 :y 0.0 :z 0.45 :w 1.0)) ;; blood red-purple
-(define *tf-wing-recolor?* #t) ;; the recolorable textures are baked in (a copy built without them: #f)
-
-(defun tf-wing-tint ((r float) (g float) (b float))
-  "Tint the wings' animated texture (both layers)."
-  (let ((a (-> *default-water-texture-anim-array* array-data 2)))
-    (dotimes (i 2)
-      (set-vector! (-> a data i start-color) r g b 1.0)
-      (set-vector! (-> a data i end-color) r g b 1.0)
-      )
-    )
-  (none)
-  )
-;; Dark Jak's wings are unstable dark eco: they flicker, stutter, flare on each flap, shed sparks
-;; and crackle with Dark Jak's lightning.
-(define *tf-dark-wing-flare* 0.0)   ;; set to 1.0 by a flap, fades out
-(define *tf-dark-wing-k* 1.0)       ;; current brightness (drifts toward a random target)
+;; TRUE FLIGHT: Dark Jak's wings are unstable dark eco: they shed sparks and crackle with Dark Jak's
+;; lightning. (Their glow color can't be changed: the PC renderer draws the wing texture animation
+;; with fixed colors, whatever the game asks for.)
 (define *tf-dark-wing-zap?* #f)     ;; a flap asks for a lightning arc
 (define *tf-dark-wing-zap-chance* 0.02) ;; random arcs per frame
 (define *tf-dark-wing-spark-chance* 0.5) ;; sparks shed per frame
-(define *tf-dark-wing-dim* 0.3)     ;; flicker range: brightness drifts between dim and dim + range
-(define *tf-dark-wing-range* 0.55)
-(define *tf-dark-wing-burst?* #f)   ;; takeoff: the wings burst out (sparks, lightning, flare, pop)
+(define *tf-dark-wing-burst?* #f)   ;; takeoff: the wings burst out (sparks, lightning, pop)
 (define *tf-dark-wing-pop* 1.0)     ;; size overshoot right after the burst, eases back to 1
 
 ;; The wings are 8 feathers (4 a side) of 5 bones each, every feather rooted on bone 3 (roots:
@@ -87,21 +66,11 @@
   )
 
 (defbehavior tf-dark-wings-fx wings ()
-  "Per frame on Dark Jak: ragged feathers, flickering glow, sparks and lightning."
+  "Per frame on Dark Jak: ragged feathers, sparks and lightning."
   (set! *tf-dark-wings-shape?* #t)
   (tf-dark-feathers-hook)
   (set! *tf-dark-wing-pop* (fmax 1.0 (- *tf-dark-wing-pop* (* 2.0 (seconds-per-frame)))))
-  (set! *tf-dark-wing-k* (lerp *tf-dark-wing-k* (+ *tf-dark-wing-dim* (* *tf-dark-wing-range* (rand-vu))) 0.35))
-  (let ((k (+ *tf-dark-wing-k* (* 0.9 *tf-dark-wing-flare*))))
-    (if (rand-vu-percent? 0.03) ;; stutter: the wing nearly gutters out for a frame
-        (set! k 0.12)
-        )
-    (let ((c (if *tf-wing-recolor?* *tf-dark-wing-color* *tf-light-wing-color*)))
-      (tf-wing-tint (* k (-> c x)) (* k (-> c y)) (* k (-> c z)))
-      )
-    (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
-    )
-  (set! *tf-dark-wing-flare* (fmax 0.0 (- *tf-dark-wing-flare* (* 2.5 (seconds-per-frame)))))
+  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
   (when (and (not (logtest? (-> self draw status) (draw-control-status no-draw no-draw-temp)))
              (not (movie?))
              (nonzero? (-> self skel active-channels))
@@ -109,7 +78,6 @@
     (when *tf-dark-wing-burst?* ;; takeoff: burst out
       (set! *tf-dark-wing-burst?* #f)
       (set! *tf-dark-wing-pop* 1.35)
-      (set! *tf-dark-wing-flare* 1.6)
       (dotimes (i 30)
         (launch-particles (-> *part-id-table* 173) (process-drawable-random-point! self (new 'stack-no-clear 'vector)))
         )
@@ -529,12 +497,11 @@
   (let ((v1-0 (ppointer->process (-> self parent))))
     (set! (-> self draw light-index) (-> (the-as process-focusable v1-0) draw light-index))
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
-    ;; TRUE FLIGHT: on Dark Jak the wings glow dark-eco purple
+    ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco
     (if (focus-test? (the-as process-focusable v1-0) dark)
         (tf-dark-wings-fx)
         (begin
-          (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers and color stay as they are
-          (tf-wing-tint (-> *tf-light-wing-color* x) (-> *tf-light-wing-color* y) (-> *tf-light-wing-color* z))
+          (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
           (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
           )
         )

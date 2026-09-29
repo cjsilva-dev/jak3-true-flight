@@ -61,22 +61,17 @@ option off again. With both off — the default — the mod writes nothing to yo
 ## What this mod changes
 
 - `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo, dash, landing and Dark Jak's flight
-- `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look (tint, shape, flicker, sparks, lightning)
+- `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look (ragged shape, sparks, lightning)
 - `goal_src/jak3/engine/target/target.gc` — Dark Jak takes off from the double jump
 - `goal_src/jak3/engine/target/target-death.gc` — a hit while flying is a flinch in the air
 - `goal_src/jak3/engine/common-obs/powerups.gc` — the wings are removed before their animations are unloaded
-- `goal_src/jak3/engine/gfx/texture/texture-anim-tables.gc` — the wings' glow color is set by the game every frame
-- `custom_assets/jak3/texture_replacements/level-default-water/lightjak-wings-{u,v}-src.png` — Light Jak's
-  two wing-glow textures, recolorable: tinted cyan they're identical to the originals (Light Jak looks
-  exactly as before); Dark Jak tints them his own color
 - `goal_src/jak3/engine/camera/cam-master.gc` — the camera tracks Jak's height while flying
 - `goal_src/jak3/engine/level/region.gc` — while flying in the city, district triggers are tested a little ahead of Jak (at most 30 m)
 
 ## Not included
 
-Apart from the two small recolorable wing textures above (made from the game's own), this mod contains
-only code. Everything it shows or plays — Light and Dark Jak, the wings, sounds, the Dark Bomb effects —
-comes from your own copy of *Jak 3*. HD texture packs are not part of it; install your favourite pack
+This mod contains only code. Everything it shows or plays — Light and Dark Jak, the wings, sounds, the
+Dark Bomb effects — comes from your own copy of *Jak 3*. HD texture packs are not part of it; install your favourite pack
 through the OpenGOAL launcher as usual.
 
 ## Credits
