@@ -1,8 +1,8 @@
 # True Flight — Jak 3
 
-**Light Jak really flies.** An [OpenGOAL](https://opengoal.dev) mod for *Jak 3* that turns Light Jak's
-short glide into full flight: stacking wing flaps, a momentum glide, a turbo, and a superhero landing
-that sets off a Dark Bomb blast.
+**Light Jak really flies — and so does Dark Jak.** An [OpenGOAL](https://opengoal.dev) mod for *Jak 3*
+that turns Light Jak's short glide into full flight: stacking wing flaps, a momentum glide, a turbo, a
+dash, and a superhero landing. Dark Jak gets his own, meaner version of it.
 
 ## Controls (as Light Jak)
 
@@ -11,10 +11,28 @@ that sets off a Dark Bomb blast.
 | **X** in the air | Flap. Every flap stacks more height; **hold X** through a flap for extra lift |
 | **Hold L1** | Glide. Diving turns into forward speed, and the momentum carries |
 | **X while gliding** | Big launch upward (Jak lifts his nose into it) |
-| **R1** | Turbo — while flapping, or on top of a glide |
-| **Square** in the air | Superhero landing: an accelerating dive (hold Square to dive harder) ending in a Dark Bomb blast that scales with the drop. No fall damage from any height |
+| **Tap R1** | Dash: a quick lunge forward in a trail of glittering light |
+| **Hold R1** | Turbo — while flapping, or on top of a glide |
+| **Square** in the air | Superhero landing: an accelerating dive (hold Square to dive harder) ending in a burst of light that hits everything around, bigger the higher you fell |
 
-The camera follows Jak's height while flying and rises for a better view while gliding.
+The camera follows Jak's height while flying and rises for a better view while gliding. Shot while
+flying, Jak flinches in the air and flies on. There's no fall damage after flying, from any height.
+
+## Dark Jak flies too
+
+As Dark Jak, **double-jump** to take off: Light Jak's wings burst out of him, reshaped into ragged,
+twitching dark wings that crackle with lightning. The controls are the same, but Dark Jak flies his own
+way:
+
+- fewer, harder flaps that throw him forward, and a heavier fall between them
+- a faster glide that cuts sharper turns, leaning into it
+- **tap R1** for a dash attack: a lunge in a streak of dark energy and lightning that hits whatever he
+  flies through
+- **Square** is the real Dark Bomb: the wings fold, he dives in the bomb pose and lands in its blast
+
+About a second after he lands, the wings fold away and his dark attacks come back (straight away if
+you press an attack). Dark Jak can take off any time you have him — Light Jak's flight power isn't
+needed.
 
 ### In Haven City
 
@@ -34,21 +52,27 @@ At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.
 
 - `*tf-opt-all-light-powers?*` — every Light Jak power and endless light eco from any save
 - `*tf-opt-unlock-extras?*` — every Secrets-menu item and OpenGOAL PC cheat unlocked
+- `*tf-opt-all-dark-powers?*` — Dark Jak and all his powers, Unlimited Dark Jak and a full dark eco meter from any save
+- `*tf-opt-quiet-debug?*` — for development: hides the debug text and cursor in a `-debug` boot
 
 What these unlock is saved (in your save file and PC settings) and stays unlocked if you switch the
 option off again. With both off — the default — the mod writes nothing to your save.
 
 ## What this mod changes
 
-- `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo and landing
+- `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo, dash, landing and Dark Jak's flight
+- `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look (ragged shape, sparks, lightning)
+- `goal_src/jak3/engine/target/target.gc` — Dark Jak takes off from the double jump
+- `goal_src/jak3/engine/target/target-death.gc` — a hit while flying is a flinch in the air
+- `goal_src/jak3/engine/common-obs/powerups.gc` — the wings are removed before their animations are unloaded
 - `goal_src/jak3/engine/camera/cam-master.gc` — the camera tracks Jak's height while flying
 - `goal_src/jak3/engine/level/region.gc` — while flying in the city, district triggers are tested a little ahead of Jak (at most 30 m)
 
 ## Not included
 
-This mod contains only code. Everything it shows or plays — Light Jak, his wings, sounds, the Dark Bomb
-effects — comes from your own copy of *Jak 3*. HD texture packs are not part of it; install your
-favourite pack through the OpenGOAL launcher as usual.
+This mod contains only code. Everything it shows or plays — Light and Dark Jak, the wings, sounds, the
+Dark Bomb effects — comes from your own copy of *Jak 3*. HD texture packs are not part of it; install your favourite pack
+through the OpenGOAL launcher as usual.
 
 ## Credits
 
