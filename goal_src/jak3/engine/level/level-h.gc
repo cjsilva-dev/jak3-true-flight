@@ -27,6 +27,10 @@
 ;; re-decided in the same frame instead of thrashing against the regions.
 (define *tf-want-levels-hook* (the-as (function none) #f))
 (define *tf-in-want-hook?* #f)
+;; Until this frame counter, level loads are drained as fast as the DGO arrives (set by the flight
+;; code while flying in the city). Elsewhere the game keeps its one-object-per-call pacing: at
+;; boot, for one, the gamefont must be the last thing in the texture pool when it's removed.
+(define *tf-fast-load-until* 0)
 ;; A level the flight code expects soon: its .fr3 is handed to the renderer early (level.gc) so
 ;; it's in the renderer's cache before the game asks for it. Not loaded by the game.
 (define *tf-prewarm-level* (the-as symbol #f))

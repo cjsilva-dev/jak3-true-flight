@@ -2551,7 +2551,8 @@
 
 (defun tf-district-at ((pos vector))
   "Which district is this point in? The level data has no usable footprints, so use the
-   continue points: each carries the district it sits in (vis-nick), and the nearest one wins."
+   continue points: each belongs to a district's level-load-info (its vis-nick is often
+   ctywide-ff or an interior in Jak 3, so the owning level is what counts), nearest one wins."
   (let ((best (the-as symbol #f))
         (bestd 0.0)
         (lst *level-load-list*)
@@ -2561,11 +2562,10 @@
         (when (and (type? info level-load-info)
                    (string-prefix= "cty" (symbol->string (-> (the-as level-load-info info) name)))
                    )
-          (let ((cl (-> (the-as level-load-info info) continues)))
+          (let ((cl (-> (the-as level-load-info info) continues))
+                (nick (-> (the-as level-load-info info) name)))
             (while (not (null? cl))
-              (let* ((c (the-as continue-point (car cl)))
-                     (nick (-> c vis-nick))
-                     )
+              (let ((c (the-as continue-point (car cl))))
                 (when (member nick *tf-city-districts*)
                   (let* ((dx (- (-> c trans x) (-> pos x)))
                          (dz (- (-> c trans z) (-> pos z)))
@@ -2846,6 +2846,7 @@
    district displayed (display is normally switched on by regions at the gates, which flight
    skips: a loaded district sat undrawn behind a dark cliff)."
   (set! *tf-air-frame* (-> *display* real-clock frame-counter))
+  (set! *tf-fast-load-until* (+ (-> *display* real-clock frame-counter) 60)) ;; drain DGOs while flying
   (set! *tf-vis-from-air?* #t) ;; new districts draw fully from the air (cam-update.gc)
   (set! *tf-stream-timer* (+ *tf-stream-timer* 1))
   (when (<= *tf-stream-every* *tf-stream-timer*)

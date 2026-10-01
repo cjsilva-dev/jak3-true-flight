@@ -239,10 +239,19 @@ void Loader::loader_thread() {
       // simulate slower hard drive (so that the loader thread can lose to the game loads)
       // std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
-      // load the fr3 file
+      // load the fr3 file (a name with no file, e.g. an alias level, is skipped, not fatal)
       prof().begin_event("read-file");
       Timer disk_timer;
-      auto data = file_util::read_binary_file(m_base_path / fmt::format("{}.fr3", lev));
+      auto fr3_path = m_base_path / fmt::format("{}.fr3", lev);
+      if (!fs::exists(fr3_path)) {
+        lg::error("loader: no fr3 for level {}, skipping", lev);
+        prof().end_event();
+        lk.lock();
+        m_level_to_load = "";
+        m_file_load_done_cv.notify_all();
+        continue;
+      }
+      auto data = file_util::read_binary_file(fr3_path);
       double disk_load_time = disk_timer.getSeconds();
       prof().end_event();
 
