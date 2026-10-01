@@ -3,6 +3,7 @@
 #include <ranges>
 
 #include "common/global_profiler/GlobalProfiler.h"
+#include "common/log/log.h"
 #include "common/util/FileUtil.h"
 #include "common/util/Timer.h"
 #include "common/util/compress.h"
@@ -40,6 +41,10 @@ const LevelData* Loader::get_tfrag3_level(const std::string& level_name) {
     return nullptr;
   } else {
     existing->second->frames_since_last_used = 0;
+    if (!existing->second->first_use_logged) {
+      existing->second->first_use_logged = true;
+      lg::debug("loader: first-use {}", level_name);
+    }
     return existing->second.get();
   }
 }
@@ -75,6 +80,7 @@ void Loader::set_want_levels(const std::vector<std::string>& levels) {
     if (it == m_loaded_tfrag3_levels.end()) {
       // we haven't loaded it yet. Request this level to load and wake up the thread.
       m_level_to_load = lev;
+      lg::debug("loader: begin {}", lev);
       lk.unlock();
       m_loader_cv.notify_all();
       return;
@@ -287,6 +293,18 @@ void Loader::loader_thread() {
       fmt::print(
           "------------> Load from file: {:.3f}s, import {:.3f}s, decomp {:.3f}s unpack {:.3f}s\n",
           disk_load_time, import_time, decomp_time, unpack_timer.getSeconds());
+      {
+        size_t tex_bytes = 0;
+        for (auto& t : result->textures) {
+          tex_bytes += (size_t)t.w * t.h * 4;
+        }
+        lg::debug(
+            "loader: file {} read {:.0f}ms decomp {:.0f}ms import {:.0f}ms unpack {:.0f}ms; {:.1f} MB "
+            "-> {:.1f} MB, {} textures {:.1f} MB",
+            lev, disk_load_time * 1000.0, decomp_time * 1000.0, import_time * 1000.0,
+            unpack_timer.getSeconds() * 1000.0, data.size() / 1048576.0,
+            decomp_data.size() / 1048576.0, result->textures.size(), tex_bytes / 1048576.0);
+      }
 
       // grab the lock again
       lk.lock();
@@ -492,7 +510,10 @@ void Loader::update(TexturePool& texture_pool) {
       auto& lev = it->second;
       if (it->second->load_id == UINT64_MAX) {
         it->second->load_id = m_id++;
+        it->second->init_timer.start();
+        lg::debug("loader: gpu-start {}", name);
       }
+      it->second->init_frames++;
 
       // we're the only place that erases, so it's okay to unlock and hold a reference
       lk.unlock();
@@ -502,7 +523,8 @@ void Loader::update(TexturePool& texture_pool) {
       loader_input.mercs = &m_all_merc_models;
       loader_input.tex_pool = &texture_pool;
 
-      for (auto& stage : m_loader_stages) {
+      for (size_t si = 0; si < m_loader_stages.size(); si++) {
+        auto& stage = m_loader_stages[si];
         auto evt = scoped_prof(fmt::format("stage-{}", stage->name()).c_str());
         Timer stage_timer;
         done = stage->run(loader_timer, loader_input);
@@ -512,10 +534,17 @@ void Loader::update(TexturePool& texture_pool) {
         if (!done) {
           break;
         }
+        if ((int)si > lev->last_stage_done) {
+          lev->last_stage_done = si;
+          lg::debug("loader: {} stage {} done, frame {} ({:.0f} ms since gpu-start)", name,
+                    stage->name(), lev->init_frames, lev->init_timer.getMs());
+        }
       }
 
       if (done) {
         auto evt = scoped_prof("finish-stages");
+        lg::debug("loader: ready {} after {} frames ({:.0f} ms since gpu-start)", name,
+                  lev->init_frames, lev->init_timer.getMs());
         lk.lock();
         m_loaded_tfrag3_levels[name] = std::move(lev);
         m_initializing_tfrag3_levels.erase(it);
@@ -537,6 +566,7 @@ void Loader::update(TexturePool& texture_pool) {
         auto& lev = m_loaded_tfrag3_levels.at(*to_unload);
         std::unique_lock<std::mutex> lk(texture_pool.mutex());
         fmt::print("------------------------- PC unloading {}\n", *to_unload);
+        lg::debug("loader: unload {}", *to_unload);
         for (size_t i = 0; i < lev->level->textures.size(); i++) {
           auto& tex = lev->level->textures[i];
           if (tex.load_to_pool) {

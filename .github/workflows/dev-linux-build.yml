@@ -1,0 +1,15 @@
+name: Dev Linux Build (manual)
+
+# Builds the Linux engine binaries (gk, goalc, extractor) for local testing of engine changes,
+# with the same preset the mod release pipeline uses.
+on:
+  workflow_dispatch:
+
+jobs:
+  build_linux:
+    uses: ./.github/workflows/linux-build-clang.yaml
+    with:
+      cmakePreset: "Release-linux-clang-static"
+      cachePrefix: "static"
+      uploadArtifacts: true
+    secrets: inherit

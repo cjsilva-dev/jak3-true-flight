@@ -3,6 +3,7 @@
 #include "common/common_types.h"
 #include "common/custom_data/Tfrag3Data.h"
 #include "common/util/Timer.h"
+#include "common/util/Timer.h"
 
 #include "game/graphics/texture/TexturePool.h"
 
@@ -32,6 +33,12 @@ struct LevelData {
   GLuint hfrag_indices;
 
   int frames_since_last_used = 0;
+
+  // load timing (logged so streaming can be measured)
+  Timer init_timer = Timer();
+  int init_frames = 0;
+  int last_stage_done = -1;
+  bool first_use_logged = false;
 };
 
 struct MercRef {
