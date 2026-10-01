@@ -31,6 +31,10 @@
 ;; code while flying in the city). Elsewhere the game keeps its one-object-per-call pacing: at
 ;; boot, for one, the gamefont must be the last thing in the texture pool when it's removed.
 (define *tf-fast-load-until* 0)
+;; The last level that didn't fit the level heap (load-begin gives up on it instead of crashing),
+;; and when: the flight streamer leaves it alone for a while.
+(define *tf-stream-failed* (the-as symbol #f))
+(define *tf-stream-failed-frame* 0)
 ;; A level the flight code expects soon: its .fr3 is handed to the renderer early (level.gc) so
 ;; it's in the renderer's cache before the game asks for it. Not loaded by the game.
 (define *tf-prewarm-level* (the-as symbol #f))

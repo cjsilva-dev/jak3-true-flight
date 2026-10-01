@@ -1642,8 +1642,27 @@
                  )
                )
              )
-           #t
-           (break!)
+           ;; TRUE FLIGHT MOD: the original stopped the game here (break!). On PC a level that
+           ;; doesn't fit just isn't loaded: forget the want, remember the failure for the
+           ;; flight streamer, and leave this slot inactive.
+           (set! *tf-stream-failed* (-> this name))
+           (set! *tf-stream-failed-frame* (-> *display* real-clock frame-counter))
+           (let ((names (new 'stack-no-clear 'array 'symbol 10))
+                 (n 0))
+             (dotimes (i 10)
+               (set! (-> names i) #f)
+               )
+             (dotimes (w 10)
+               (let ((nm (-> *load-state* want w name)))
+                 (when (and nm (!= nm (-> this name)) (< n 10))
+                   (set! (-> names n) nm)
+                   (set! n (+ n 1))
+                   )
+                 )
+               )
+             (want-levels *load-state* names)
+             )
+           (return this)
            0
            )
           (else
