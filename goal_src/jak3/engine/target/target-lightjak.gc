@@ -2520,6 +2520,7 @@
 (define *tf-stream-second* #f)             ;; the second district we chose last time
 (define *tf-stream-cand* #f)               ;; the "next" being considered, and for how long
 (define *tf-stream-cand-n* 0)
+(define *tf-stream-last-frame* 0)       ;; when the last decision ran
 
 (defun tf-level-outside? ((name symbol) (pos vector))
   "Is pos outside loaded level NAME's main geometry sphere (so it's safe to unload it)?
@@ -2689,6 +2690,14 @@
       (if (= next now)
           (set! next #f)
           )
+      ;; after a teleport or a long walk the remembered districts are stale: forget them
+      (when (< 120 (- (-> *display* real-clock frame-counter) *tf-stream-last-frame*))
+        (set! *tf-stream-prev* #f)
+        (set! *tf-stream-second* #f)
+        (set! *tf-stream-cand* #f)
+        (set! *tf-stream-next* #f)
+        )
+      (set! *tf-stream-last-frame* (-> *display* real-clock frame-counter))
       ;; a new "next" has to hold for a few decisions before it replaces the old one
       (cond
         ((= next *tf-stream-cand*)
