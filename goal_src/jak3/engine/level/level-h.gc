@@ -10,6 +10,27 @@
 ;; total amount of levels, including ones outside level heap (default-level)
 (defconstant LEVEL_TOTAL 11)
 
+;; TRUE FLIGHT: streaming log. One line per level event, with the frame counter and a
+;; millisecond clock, so a level load can be timed stage by stage from the game log.
+(define *tf-stream-log?* #f)
+(defun tf-lvl-log ((ev string) (name symbol) (a symbol) (b symbol))
+  (if *tf-stream-log?*
+      (format 0 "LVL ~D ~D ~S ~A ~A ~A~%"
+              (-> *display* real-clock frame-counter)
+              (/ (the int (get-cpu-clock)) 300000)
+              ev name a b)
+      )
+  (none)
+  )
+;; While flying in the city the flight code owns the district wants (target-lightjak.gc). Every
+;; want-levels call (the gate trigger regions) runs this hook afterwards, so the districts are
+;; re-decided in the same frame instead of thrashing against the regions.
+(define *tf-want-levels-hook* (the-as (function none) #f))
+(define *tf-in-want-hook?* #f)
+;; A level the flight code expects soon: its .fr3 is handed to the renderer early (level.gc) so
+;; it's in the renderer's cache before the game asks for it. Not loaded by the game.
+(define *tf-prewarm-level* (the-as symbol #f))
+
 (declare-type bsp-header basic)
 (declare-type drawable basic)
 (declare-type entity-links-array inline-array-class)

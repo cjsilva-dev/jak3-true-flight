@@ -157,6 +157,11 @@
       )
     )
   (add-borrow-levels this)
+  (when (and *tf-want-levels-hook* (not *tf-in-want-hook?*))
+    (set! *tf-in-want-hook?* #t)
+    (*tf-want-levels-hook*)
+    (set! *tf-in-want-hook?* #f)
+    )
   0
   )
 
