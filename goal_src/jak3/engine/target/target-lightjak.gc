@@ -2977,10 +2977,17 @@
            (ahead (new-stack-vector0))
            (cnow (begin
                    (set! *tf-stream-present-only?* #t)
-                   (let ((c (let ((under (tf-level-under pos)))
-                              (if under
-                                  (tf-nearest-continue-of pos under) ;; geometry says where we are
-                                  (tf-nearest-continue pos (the-as symbol #f))))))
+                   ;; where we are: the nearest continue point of a loaded level (accurate in the
+                   ;; cities; the levels' bounding spheres are loose and offset, so geometry is only
+                   ;; the fallback when no loaded level has a continue point in reach)
+                   (let ((c (tf-nearest-continue pos (the-as symbol #f))))
+                     (when (not c)
+                       (let ((under (tf-level-under pos)))
+                         (if under
+                             (set! c (tf-nearest-continue-of pos under))
+                             )
+                         )
+                       )
                      (when (not c)
                        ;; flown out of every loaded level's reach: take the nearest spot of any
                        ;; level, which then gets loaded as "here"
@@ -3179,11 +3186,44 @@
   )
 (set! *tf-want-levels-hook* tf-stream-hook)
 
+;; ---- ANTI-ABYSS NET ----
+;; If, despite everything, the ground isn't there (a level late or missing), Jak falls through the
+;; world. Below *tf-abyss-y* (far under any street or water) he is put back where he last flew
+;; over solid, loaded ground, instead of dying.
+(define *tf-abyss-y* (meters -25))
+(define *tf-safe-pos* (new 'static 'vector))
+(define *tf-safe-frame* 0)
+(define *tf-abyss-saves* 0)
+
+(defbehavior tf-abyss-net target ()
+  (let ((y (-> self control trans y)))
+    (cond
+      ((and (< *tf-abyss-y* y) (< (meters 3) y) *tf-stream-now* (tf-level-present? *tf-stream-now*))
+       ;; flying over a loaded area: remember it (every half second)
+       (when (< (seconds 0.5) (- (-> *display* real-clock frame-counter) *tf-safe-frame*))
+         (vector-copy! *tf-safe-pos* (-> self control trans))
+         (set! *tf-safe-frame* (-> *display* real-clock frame-counter))
+         )
+       )
+      ((and (< y *tf-abyss-y*) (< 0 *tf-safe-frame*))
+       ;; through the world: back to the last safe spot, a little higher, hovering
+       (set! (-> self control trans quad) (-> *tf-safe-pos* quad))
+       (+! (-> self control trans y) (meters 10))
+       (vector-reset! (-> self control transv))
+       (set! *tf-abyss-saves* (+ *tf-abyss-saves* 1))
+       (format 0 "ABYSS: put Jak back at ~,,0M ~,,0M ~,,0M (~D)~%" (-> *tf-safe-pos* x) (-> *tf-safe-pos* y) (-> *tf-safe-pos* z) *tf-abyss-saves*)
+       )
+      )
+    )
+  (none)
+  )
+
 (defbehavior true-flight-stream-tick target ()
   "Per frame while flying, anywhere: the level decision every few frames, and every wanted
    level that is loaded but undrawn displayed (display is normally switched on by regions at
    the gates, which flight skips: a loaded district sat undrawn behind a dark cliff)."
   (set! *tf-air-frame* (-> *display* real-clock frame-counter))
+  (tf-abyss-net)
   (set! *tf-fast-load-until* (+ (-> *display* real-clock frame-counter) 60)) ;; drain DGOs while flying
   (set! *tf-vis-from-air?* #t) ;; new levels draw fully from the air (cam-update.gc)
   (set! *tf-stream-timer* (+ *tf-stream-timer* 1))
