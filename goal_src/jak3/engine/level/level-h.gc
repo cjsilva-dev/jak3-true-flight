@@ -27,6 +27,9 @@
 ;; re-decided in the same frame instead of thrashing against the regions.
 (define *fs-want-levels-hook* (the-as (function none) #f))
 (define *fs-in-want-hook?* #f)
+;; The game's fell-out-of-the-world check (logic-target.gc) asks this first; #t = Jak was put back
+;; over solid ground by the flight code (flight-stream.gc), don't kill him.
+(define *fs-endlessfall-hook* (the-as (function symbol) #f))
 ;; Until this frame counter, level loads are drained as fast as the DGO arrives (set by the flight
 ;; code while flying in the city). Elsewhere the game keeps its one-object-per-call pacing: at
 ;; boot, for one, the gamefont must be the last thing in the texture pool when it's removed.

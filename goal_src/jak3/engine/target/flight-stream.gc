@@ -36,8 +36,10 @@
 ;;     the desert-game alias expansion) are left alone (adapter lists).
 ;;  9. load-begin no longer stops the game when a level doesn't fit (level.gc): the want is dropped and
 ;;     remembered, so a wrong pick costs a late load, never a crash (mountain+forest, 2026-09-30).
-;; 10. Anti-abyss net: below *fs-abyss-y* (through the world) Jak goes back to where he last flew over
-;;     a loaded level (Haven corner, 2026-10-02).
+;; 10. Anti-abyss net: when the game is about to kill Jak for falling out of the world right after
+;;     flying, he goes back above the last spot where a ray straight down hit ground, and the
+;;     streamer's state is dumped to the log (Haven corner, 2026-10-02; a fixed -25 m line sat
+;;     below Haven's own -15 m death line and never fired in a real fall, 2026-10-03).
 
 ;; ---- LEVEL STREAMING WHILE FLYING (any area) ----
 (define *fs-stream-timer* 0) ;; frames since the last decision
@@ -564,10 +566,10 @@
                       (want-display-level *load-state* (-> keep i) (-> disp i))
                       )
                   )
-                (if *fs-stream-log?*
-                    (format 0 "LVL ~D ~D stream ~A ~A ~,,0M ~,,0M~%" (-> *display* real-clock frame-counter)
-                            (/ (the int (get-cpu-clock)) 300000) now next (-> pos x) (-> pos z))
-                    )
+                ;; always logged (one line per change of the level set): with the FSDUMP lines of
+                ;; the abyss net, the history a fall through the world is diagnosed from
+                (format 0 "LVL ~D ~D stream ~A ~A ~,,0M ~,,0M~%" (-> *display* real-clock frame-counter)
+                        (/ (the int (get-cpu-clock)) 300000) now next (-> pos x) (-> pos z))
                 )
               )
             )
@@ -589,35 +591,107 @@
 
 ;; ---- ANTI-ABYSS NET ----
 ;; If, despite everything, the ground isn't there (a level late or missing), Jak falls through the
-;; world. Below *fs-abyss-y* (far under any street or water) he is put back where he last flew
-;; over solid, loaded ground, instead of dying.
-(define *fs-abyss-y* (meters -25))
-(define *fs-safe-pos* (new 'static 'vector))
-(define *fs-safe-frame* 0)
+;; world and the game kills him at the level's bottom height ('endlessfall, logic-target.gc: -15 m
+;; in Haven, -150 m in Spargus). That check asks *fs-endlessfall-hook* (level-h.gc) first: when Jak
+;; was flying moments ago he is put back above the last spot where a ray cast straight down hit
+;; solid ground. (The first net waited for a fixed -25 m: below Haven's death line, so it never
+;; fired there in a real fall, and inside the playable depth of the sewers and tombs.)
+(define *fs-safe-pos* (new 'static 'vector)) ;; where Jak last flew over solid ground
+(define *fs-safe-ground-y* 0.0)              ;; the height of that ground
+(define *fs-safe-frame* 0)                   ;; when that was (0 = never)
+(define *fs-safe-probe-frame* 0)             ;; when the ray was last cast
+(define *fs-safe-probe* (meters 150))        ;; how far down the ray looks
+(define *fs-safe-max-age* (seconds 20))      ;; an older spot isn't trusted (teleports, long drops)
+(define *fs-safe-lift* (meters 10))          ;; Jak is put back at least this far above the ground
 (define *fs-abyss-saves* 0)
+(define *fs-dump-frame* 0)
 
-(defbehavior fs-abyss-net target ()
-  (let ((y (-> self control trans y)))
-    (cond
-      ((and (< *fs-abyss-y* y) (< (meters 3) y) *fs-stream-now* (fs-level-present? *fs-stream-now*))
-       ;; flying over a loaded area: remember it (every half second)
-       (when (< (seconds 0.5) (- (-> *display* real-clock frame-counter) *fs-safe-frame*))
-         (vector-copy! *fs-safe-pos* (-> self control trans))
-         (set! *fs-safe-frame* (-> *display* real-clock frame-counter))
-         )
-       )
-      ((and (< y *fs-abyss-y*) (< 0 *fs-safe-frame*))
-       ;; through the world: back to the last safe spot, a little higher, hovering
-       (set! (-> self control trans quad) (-> *fs-safe-pos* quad))
-       (+! (-> self control trans y) (meters 10))
-       (vector-reset! (-> self control transv))
-       (set! *fs-abyss-saves* (+ *fs-abyss-saves* 1))
-       (format 0 "ABYSS: put Jak back at ~,,0M ~,,0M ~,,0M (~D)~%" (-> *fs-safe-pos* x) (-> *fs-safe-pos* y) (-> *fs-safe-pos* z) *fs-abyss-saves*)
-       )
+(defun fs-dump ((why string))
+  "The black box: the streamer's view of the world, into the game log (at most every 5 s)."
+  (let ((now (-> *display* real-clock frame-counter)))
+    (when (and *target* (< (seconds 5) (- now *fs-dump-frame*)))
+      (set! *fs-dump-frame* now)
+      (let ((p (-> *target* control trans)))
+        (format 0 "FSDUMP ~S frame ~D pos ~,,0M ~,,0M ~,,0M speed ~,,0M~%" why now (-> p x) (-> p y) (-> p z)
+                (vector-xz-length (-> *target* control transv)))
+        )
+      (format 0 "FSDUMP now ~A next ~A prev ~A failed ~A current-level ~A~%" *fs-stream-now* *fs-stream-next*
+              *fs-stream-prev* *fs-stream-failed*
+              (if (-> *target* current-level) (-> *target* current-level name) #f))
+      (format 0 "FSDUMP safe ~,,0M ~,,0M ~,,0M ground ~,,0M age ~D air-age ~D~%" (-> *fs-safe-pos* x)
+              (-> *fs-safe-pos* y) (-> *fs-safe-pos* z) *fs-safe-ground-y* (- now *fs-safe-frame*)
+              (- now *fs-air-frame*))
+      (dotimes (i FS-SLOTS)
+        (if (-> *load-state* want i name)
+            (format 0 "FSDUMP want ~A ~A~%" (-> *load-state* want i name) (-> *load-state* want i display?))
+            )
+        )
+      (dotimes (i LEVEL_MAX)
+        (if (!= (-> *level* level i status) 'inactive)
+            (format 0 "FSDUMP level ~A ~A~%" (-> *level* level i name) (-> *level* level i status))
+            )
+        )
       )
     )
   (none)
   )
+
+(defbehavior fs-abyss-net target ()
+  "Twice a second while flying: remember this spot if there is solid ground straight below."
+  (let ((now (-> *display* real-clock frame-counter)))
+    (when (< (seconds 0.5) (- now *fs-safe-probe-frame*))
+      (set! *fs-safe-probe-frame* now)
+      (let ((q (new 'stack-no-clear 'collide-query)))
+        (vector-copy! (-> q start-pos) (-> self control trans))
+        (+! (-> q start-pos y) (meters 1))
+        (set-vector! (-> q move-dist) 0.0 (- *fs-safe-probe*) 0.0 1.0)
+        (set! (-> q radius) 40.96)
+        (set! (-> q collide-with) (collide-spec backgnd))
+        (set! (-> q ignore-process0) #f)
+        (set! (-> q ignore-process1) #f)
+        (set! (-> q ignore-pat) (new 'static 'pat-surface :noentity #x1 :nojak #x1 :probe #x1 :noendlessfall #x1))
+        (set! (-> q action-mask) (collide-action solid))
+        (when (>= (fill-and-probe-using-line-sphere *collide-cache* q) 0.0)
+          (vector-copy! *fs-safe-pos* (-> self control trans))
+          (set! *fs-safe-ground-y* (-> q best-other-tri intersect y))
+          (set! *fs-safe-frame* now)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun fs-endlessfall-rescue ()
+  "The game is about to kill Jak for falling out of the world (logic-target.gc). If he was flying
+   moments ago and a spot over solid ground is fresh, put him back there, hovering, and say so
+   (#t: no death). Otherwise #f, and the game carries on as it always did."
+  (let ((now (-> *display* real-clock frame-counter))
+        (saved #f)
+        )
+    (when (and *target* (< (- now *fs-air-frame*) (seconds 10)))
+      (cond
+        ((and (< 0 *fs-safe-frame*) (< (- now *fs-safe-frame*) *fs-safe-max-age*))
+         (fs-dump "ABYSS")
+         (let ((ctrl (-> *target* control)))
+           (set! (-> ctrl trans quad) (-> *fs-safe-pos* quad))
+           (set! (-> ctrl trans y) (fmax (-> *fs-safe-pos* y) (+ *fs-safe-ground-y* *fs-safe-lift*)))
+           (vector-reset! (-> ctrl transv))
+           )
+         (set! *fs-abyss-saves* (+ *fs-abyss-saves* 1))
+         (format 0 "ABYSS: put Jak back at ~,,0M ~,,0M ~,,0M (~D)~%" (-> *fs-safe-pos* x) (-> *fs-safe-pos* y)
+                 (-> *fs-safe-pos* z) *fs-abyss-saves*)
+         (set! saved #t)
+         )
+        (else
+          (fs-dump "ABYSS-DEATH")
+          )
+        )
+      )
+    saved
+    )
+  )
+(set! *fs-endlessfall-hook* fs-endlessfall-rescue)
 
 (defbehavior fs-tick target ()
   "Per frame while flying, anywhere: the level decision every few frames, and every wanted
