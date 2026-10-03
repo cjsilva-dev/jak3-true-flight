@@ -332,6 +332,8 @@
   "target2.o"
   "target-swim.o"
   "target-darkjak.o"
+  "flight-stream-h.o"
+  "flight-stream.o"
   "target-lightjak.o"
   "target-invisible.o"
   "target-launch.o"

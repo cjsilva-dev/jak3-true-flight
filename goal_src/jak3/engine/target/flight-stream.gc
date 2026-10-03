@@ -1,0 +1,774 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: flight-stream.gc
+;; FLIGHT STREAMER -- shared between Dark Flight (Jak 2) and True Flight (Jak 3).
+;; This file is byte-identical in both repos; everything game-specific lives in flight-stream-h.gc
+;; (slot count, memory-mode names, master levels, excluded levels, areas left alone, mission guard).
+;; The engine-side pieces (level-h.gc, level.gc, load-state.gc, cam-update.gc) use the same fs- names.
+;;
+;; The game swaps levels with trigger regions at gates and doorways; flying over the walls never
+;; crosses them, so at speed you reach a level before it's loaded. Every continue point stores the
+;; exact level set the game loads at that spot, always a set that fits the level heap. While flying,
+;; ask for the set of the continue point nearest to where Jak will be in a few seconds, plus the level
+;; under him, re-decided every few frames and whenever anything else changes the wants (the hook).
+;;
+;; Rules, each with the incident that motivated it:
+;;  1. "here" = the nearest continue point of a LOADED level, in 3D (interiors and the catacombs have
+;;     continues inside the city's volume; Jak can only be in a loaded level). The levels' bounding
+;;     spheres are only a fallback when no loaded level has a continue in reach: they are loose and
+;;     offset and once unloaded the slums under Jak (Haven corner, 2026-10-02).
+;;  2. "next" = the nearest continue ahead (half-way and full look-ahead, so a narrow neighbour is
+;;     never skipped) among NEIGHBOURS: levels whose continue points list each other, checked per
+;;     level (the nearest continue of a district can be an interior's door; Haven, 2026-10-01).
+;;  3. Wanted set = here + next + what both spots share + anything Jak is inside + 'special levels;
+;;     the union of two valid sets can exceed the heap (Spargus, 2026-10-01). With nothing ahead:
+;;     here, the level just left while still loaded, and this spot's levels already here (never pull
+;;     in a spot's optional extra, the arena or an interior, just for flying past).
+;;  4. A new "next" must hold *fs-stream-settle* decisions (the look-ahead point wobbles across a
+;;     boundary). After a failed load nothing new is tried for 10 s and the pending next is dropped.
+;;  5. Interiors vs areas: an area has continue points spread > *fs-stream-spread* apart, or is an
+;;     edge-sized sub-zone of a master whose set names a sibling (desert zones); an interior's
+;;     continues cluster at its door (gun course, construction site; Haven, 2026-10-01).
+;;  6. Master levels (ctywide, waswide, desert) are never "here" or "next" (desert churn, 2026-10-01).
+;;  7. A sub-level's master goes into the list ahead of it (ctyport needs ctywide; the game asserts).
+;;  8. Dev levels are excluded; areas that stream by position themselves (the Jak 3 desert, through
+;;     the desert-game alias expansion) are left alone (adapter lists).
+;;  9. load-begin no longer stops the game when a level doesn't fit (level.gc): the want is dropped and
+;;     remembered, so a wrong pick costs a late load, never a crash (mountain+forest, 2026-09-30).
+;; 10. Anti-abyss net: below *fs-abyss-y* (through the world) Jak goes back to where he last flew over
+;;     a loaded level (Haven corner, 2026-10-02).
+
+;; ---- LEVEL STREAMING WHILE FLYING (any area) ----
+(define *fs-stream-timer* 0) ;; frames since the last decision
+;; The game swaps levels with trigger regions at gates and doorways; flying over the walls never
+;; crosses them, so at speed you reach a level before it's loaded (Haven's districts, Spargus's
+;; two halves...). Every continue point stores the exact level set the game loads at that spot,
+;; always a set that fits the level heap. While flying, ask for the set of the continue point
+;; nearest to where Jak will be in a few seconds, plus the level under him, re-decided every few
+;; frames and whenever anything else changes the wants.
+(define *fs-stream-ahead* 2.5)             ;; seconds of flight the next area is picked ahead...
+(define *fs-stream-ahead-min* (meters 100)) ;; ...at least this far, at most *fs-stream-ahead-max*
+(define *fs-stream-ahead-max* (meters 250)) ;; (the half-way point is checked first so none is skipped)
+(define *fs-stream-settle* 5)              ;; decisions in a row a new "next" needs before it counts
+(define *fs-stream-every* 6)               ;; frames between decisions
+(define *fs-stream-reach* (meters 400))    ;; no continue point this close: not a streamed area, hands off
+(define *fs-air-frame* 0)                  ;; last frame the flight code ran (the want hook checks it)
+(define *fs-stream-now* #f)                ;; the level Jak is over
+(define *fs-stream-next* #f)               ;; the level he's heading for
+(define *fs-stream-cand* #f)               ;; the "next" being considered, and for how long
+(define *fs-stream-cand-n* 0)
+(define *fs-stream-last-frame* 0)          ;; when the last decision ran
+(define *fs-stream-prev* #f)               ;; the level Jak just left (kept until a new "next" shows up)
+(define *fs-stream-cnow* (the-as continue-point #f))
+(define *fs-stream-cnext* (the-as continue-point #f))
+
+(defun fs-level-outside? ((name symbol) (pos vector))
+  "Is pos outside loaded level NAME's main geometry sphere (so it's safe to unload it)?
+   (The city's bsp bsphere may be empty; the level's first drawable tree's sphere is real
+   geometry.) A level that isn't loaded counts as outside."
+  (let ((out #t))
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (= (-> lv name) name)
+                   (or (= (-> lv status) 'active) (= (-> lv status) 'loaded) (= (-> lv status) 'alive))
+                   (-> lv bsp)
+                   (nonzero? (-> lv bsp drawable-trees))
+                   (< 0 (-> lv bsp drawable-trees length))
+                   )
+          (let* ((c (-> lv bsp drawable-trees trees 0 bsphere))
+                 (dx (- (-> pos x) (-> c x)))
+                 (dz (- (-> pos z) (-> c z)))
+                 )
+            (if (< (sqrtf (+ (* dx dx) (* dz dz))) (-> c w))
+                (set! out #f)
+                )
+            )
+          )
+        )
+      )
+    out
+    )
+  )
+
+(defun fs-stream-skip-level? ((name symbol))
+  "A dev/cutscene level the streamer never considers or wants."
+  (if (member name *fs-stream-exclude*) #t #f)
+  )
+
+(defun fs-stream-hands-off? ((name symbol))
+  "An area that streams by position on its own (the desert): no decisions there."
+  (let ((skip #f)
+        (str (symbol->string name))
+        (ps *fs-stream-skip-prefixes*)
+        )
+    (while (not (null? ps))
+      (if (string-prefix= (the-as string (car ps)) str)
+          (set! skip #t)
+          )
+      (set! ps (cdr ps))
+      )
+    skip
+    )
+  )
+
+(defun fs-continue-wants? ((c continue-point) (name symbol))
+  "Does this continue point's level set include NAME?"
+  (let ((yes #f))
+    (dotimes (i (fs-want-slots c))
+      (if (= (-> c want i name) name)
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-level-present? ((name symbol))
+  "Is this level wanted or loaded right now?"
+  (let ((yes #f))
+    (dotimes (i FS-SLOTS)
+      (if (= (-> *load-state* want i name) name)
+          (set! yes #t)
+          )
+      )
+    (dotimes (i LEVEL_MAX)
+      (if (and (= (-> *level* level i name) name) (!= (-> *level* level i status) 'inactive))
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-level-links? ((a symbol) (b symbol))
+  "Do the game's continue points connect levels A and B: any continue of A lists B, or any
+   continue of B lists A? (Checked per level, not per continue: the nearest continue of a
+   district may be an interior's door, whose list says nothing about the next district.)"
+  (let ((yes #f))
+    (let ((ia (lookup-level-info a))
+          (ib (lookup-level-info b)))
+      (when ia
+        (let ((cl (-> ia continues)))
+          (while (and (not (null? cl)) (not yes))
+            (if (fs-continue-wants? (the-as continue-point (car cl)) b)
+                (set! yes #t)
+                )
+            (set! cl (cdr cl))
+            )
+          )
+        )
+      (when (and ib (not yes))
+        (let ((cl (-> ib continues)))
+          (while (and (not (null? cl)) (not yes))
+            (if (fs-continue-wants? (the-as continue-point (car cl)) a)
+                (set! yes #t)
+                )
+            (set! cl (cdr cl))
+            )
+          )
+        )
+      )
+    yes
+    )
+  )
+
+(defun fs-continue-preloads? ((c continue-point) (name symbol))
+  "Does this continue point list NAME undisplayed (loaded for the door, not a place to be)?"
+  (let ((yes #f))
+    (dotimes (i (fs-want-slots c))
+      (if (and (= (-> c want i name) name) (not (-> c want i display?)))
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(define *fs-stream-present-only?* #t) ;; "here" = a loaded level's continue; cleared for the fallback
+(define *fs-stream-spread* (meters 75)) ;; an area's continue points are spread out; an interior's cluster at its door
+
+(defun fs-outdoor-level? ((name symbol))
+  "An area you fly across (a district, Spargus, the arena) rather than an interior: it has at
+   least two continue points more than *fs-stream-spread* apart. Interiors (the hiphog, the gun
+   course, the construction site) sit in the district lists too, at their doors, but their
+   continues cluster there, and a wasted slot on one leaves no room for the district ahead."
+  (let ((info (lookup-level-info name))
+        (yes #f)
+        )
+    (when info
+      (let ((cl (-> info continues)))
+        (while (and (not (null? cl)) (not yes))
+          (let ((a (the-as continue-point (car cl)))
+                (cl2 (cdr cl))
+                )
+            (while (and (not (null? cl2)) (not yes))
+              (let* ((b (the-as continue-point (car cl2)))
+                     (dx (- (-> a trans x) (-> b trans x)))
+                     (dz (- (-> a trans z) (-> b trans z)))
+                     )
+                (if (< (* *fs-stream-spread* *fs-stream-spread*) (+ (* dx dx) (* dz dz)))
+                    (set! yes #t)
+                    )
+                )
+              (set! cl2 (cdr cl2))
+              )
+            )
+          (set! cl (cdr cl))
+          )
+        )
+      ;; a sub-zone of a bigger area (the desert's deserta..h): an edge-sized level with a master
+      ;; whose set names another level of the same master (an interior names the outside instead)
+      (when (and (not yes)
+                 (fs-master-level info)
+                 (fs-edge-mode? info)
+                 )
+        (let ((cl (-> info continues)))
+          (while (and (not (null? cl)) (not yes))
+            (let ((c (the-as continue-point (car cl))))
+              (dotimes (i (fs-want-slots c))
+                (let ((other (lookup-level-info (-> c want i name))))
+                  (if (and other (!= (-> other name) name) (= (fs-master-level other) (fs-master-level info)))
+                      (set! yes #t)
+                      )
+                  )
+                )
+              )
+            (set! cl (cdr cl))
+            )
+          )
+        )
+      )
+    yes
+    )
+  )
+
+(define *fs-stream-masters* (new 'static 'boxed-array :type symbol :length 0 :allocated-length 16))
+(defun fs-master-level? ((name symbol))
+  "Is this level the master of other levels (the desert, ctywide, waswide)? Such a level spans
+   its sub-zones and is never the zone Jak is in. The list is gathered once."
+  (when (zero? (-> *fs-stream-masters* length))
+    (let ((lst *level-load-list*))
+      (while (not (null? lst))
+        (let ((info (-> (the-as symbol (car lst)) value)))
+          (when (and (type? info level-load-info) (fs-master-level (the-as level-load-info info)))
+            (let ((m (fs-master-level (the-as level-load-info info)))
+                  (have #f))
+              (dotimes (i (-> *fs-stream-masters* length))
+                (if (= (-> *fs-stream-masters* i) m)
+                    (set! have #t)
+                    )
+                )
+              (when (and (not have) (< (-> *fs-stream-masters* length) 16))
+                (set! (-> *fs-stream-masters* (-> *fs-stream-masters* length)) m)
+                (set! (-> *fs-stream-masters* length) (+ (-> *fs-stream-masters* length) 1))
+                )
+              )
+            )
+          )
+        (set! lst (cdr lst))
+        )
+      )
+    )
+  (let ((yes #f))
+    (dotimes (i (-> *fs-stream-masters* length))
+      (if (= (-> *fs-stream-masters* i) name)
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-nearest-continue-of ((pos vector) (level symbol))
+  "The nearest continue point (3D) belonging to LEVEL, any distance."
+  (let ((best (the-as continue-point #f))
+        (bestd 0.0)
+        (info (lookup-level-info level))
+        )
+    (when info
+      (let ((cl (-> info continues)))
+        (while (not (null? cl))
+          (let ((c (the-as continue-point (car cl))))
+            (when (< 1 (fs-want-named c))
+              (let* ((dx (- (-> c trans x) (-> pos x)))
+                     (dy (- (-> c trans y) (-> pos y)))
+                     (dz (- (-> c trans z) (-> pos z)))
+                     (d (+ (* dx dx) (* dy dy) (* dz dz)))
+                     )
+                (when (or (not best) (< d bestd))
+                  (set! best c)
+                  (set! bestd d)
+                  )
+                )
+              )
+            )
+          (set! cl (cdr cl))
+          )
+        )
+      )
+    best
+    )
+  )
+
+(defun fs-level-under ((pos vector))
+  "The loaded area Jak is in: among the loaded, outdoor, normally displayed levels whose first
+   drawable tree's sphere contains pos, the one with the nearest continue point (the spheres of
+   neighbouring zones overlap a lot: a district inside the city-wide level, desert zones over
+   each other). #f when none."
+  (let ((best (the-as symbol #f))
+        (bestd 0.0)
+        )
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (or (= (-> lv status) 'active) (= (-> lv status) 'alive) (= (-> lv status) 'loaded))
+                   (!= (-> lv display?) 'special)
+                   (-> lv bsp)
+                   (nonzero? (-> lv bsp drawable-trees))
+                   (< 0 (-> lv bsp drawable-trees length))
+                   (not (fs-stream-skip-level? (-> lv name)))
+                   (not (fs-master-level? (-> lv name)))
+                   (fs-outdoor-level? (-> lv name))
+                   )
+          (let* ((c (-> lv bsp drawable-trees trees 0 bsphere))
+                 (dx (- (-> pos x) (-> c x)))
+                 (dz (- (-> pos z) (-> c z)))
+                 )
+            (when (< (sqrtf (+ (* dx dx) (* dz dz))) (-> c w))
+              (let ((cp (fs-nearest-continue-of pos (-> lv name))))
+                (when cp
+                  (let* ((ex (- (-> cp trans x) (-> pos x)))
+                         (ey (- (-> cp trans y) (-> pos y)))
+                         (ez (- (-> cp trans z) (-> pos z)))
+                         (d (+ (* ex ex) (* ey ey) (* ez ez)))
+                         )
+                    (when (or (not best) (< d bestd))
+                      (set! best (-> lv name))
+                      (set! bestd d)
+                      )
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    best
+    )
+  )
+
+(defun fs-nearest-continue ((pos vector) (near symbol))
+  "The continue point nearest to pos, skipping dev levels and continues that don't list a real
+   level set (ctyfence-start wants only itself, and ctyfence has no file). With NEAR, only
+   continues of NEAR itself or of its neighbours count: levels whose continues list NEAR, or
+   that NEAR's continues list. (Interiors and the catacombs have continue points inside the
+   city's volume; the game's own lists say what connects to what.)"
+  (let ((best (the-as continue-point #f))
+        (bestd 0.0)
+        (lst *level-load-list*)
+        )
+    (while (not (null? lst))
+      (let ((info (-> (the-as symbol (car lst)) value)))
+        (when (and (type? info level-load-info)
+                   (not (fs-stream-skip-level? (-> (the-as level-load-info info) name)))
+                   )
+          (let ((cl (-> (the-as level-load-info info) continues)))
+            (while (not (null? cl))
+              (let ((c (the-as continue-point (car cl))))
+                (when (and (< 1 (fs-want-named c))
+                           (-> c level)
+                           (not (fs-stream-skip-level? (-> c level)))
+                           (not (fs-master-level? (-> c level)))
+                           (fs-outdoor-level? (-> c level))
+                           (if near
+                               (and (or (= (-> c level) near)
+                                        (fs-level-links? near (-> c level))
+                                        )
+                                    ;; the bigger area we're already inside (the desert master) is no "next"
+                                    (let ((ni (lookup-level-info near)))
+                                      (not (and ni (= (fs-master-level ni) (-> c level)))))
+                                    )
+                               (or (not *fs-stream-present-only?*)
+                                   (fs-level-present? (-> c level))) ;; the spot we're at: a level we have
+                               )
+                           )
+                  (let* ((dx (- (-> c trans x) (-> pos x)))
+                         (dy (- (-> c trans y) (-> pos y)))
+                         (dz (- (-> c trans z) (-> pos z)))
+                         (d (+ (* dx dx) (* dy dy) (* dz dz)))
+                         )
+                    (when (or (not best) (< d bestd))
+                      (set! best c)
+                      (set! bestd d)
+                      )
+                    )
+                  )
+                )
+              (set! cl (cdr cl))
+              )
+            )
+          )
+        )
+      (set! lst (cdr lst))
+      )
+    (if (and best (< *fs-stream-reach* (sqrtf bestd)))
+        (set! best (the-as continue-point #f))
+        )
+    best
+    )
+  )
+
+(defun fs-borrow-level? ((name symbol))
+  "A borrow-mode level (the game re-adds these itself from its hosts)."
+  (let ((info (lookup-level-info name)))
+    (if (and info (fs-borrow-mode? info)) #t #f)
+    )
+  )
+
+(defun fs-real-level? ((name symbol))
+  "Does this level take a real bank of the level heap (not a borrow or alias level)?"
+  (let ((info (lookup-level-info name)))
+    (if (and info (not (fs-alias-mode? info)) (not (fs-borrow-mode? info))) #t #f)
+    )
+  )
+
+(defun fs-stream-add ((keep (pointer symbol)) (disp (pointer symbol)) (n int) (name symbol) (d symbol))
+  "Append name (with its display flag) to the keep list unless it's there, excluded or just
+   failed. A sub-level's master level goes in ahead of it (the game asserts otherwise)."
+  (if (and name *fs-stream-log?* (= name *fs-stream-failed*)
+           (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10)))
+      (format 0 "LVL ~D ~D skip-failed ~A~%" (-> *display* real-clock frame-counter) (/ (the int (get-cpu-clock)) 300000) name)
+      )
+  (when (and name
+             (< n FS-SLOTS)
+             (not (fs-stream-skip-level? name))
+             (not (and (= name *fs-stream-failed*)
+                       (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10))))
+             )
+    (let ((dup #f))
+      (dotimes (i n)
+        (if (= (-> keep i) name)
+            (set! dup #t)
+            )
+        )
+      (when (not dup)
+        (let ((info (lookup-level-info name)))
+          (when (and info (fs-master-level info) (!= (fs-master-level info) name))
+            (let ((have #f))
+              (dotimes (i n)
+                (if (= (-> keep i) (fs-master-level info))
+                    (set! have #t)
+                    )
+                )
+              (when (and (not have) (< n (- FS-SLOTS 1)))
+                (set! (-> keep n) (fs-master-level info))
+                (set! (-> disp n) 'display)
+                (set! n (+ n 1))
+                )
+              )
+            )
+          )
+        (when (< n FS-SLOTS)
+          (set! (-> keep n) name)
+          (set! (-> disp n) d)
+          (set! n (+ n 1))
+          )
+        )
+      )
+    )
+  n
+  )
+
+(defun fs-stream-decide ()
+  "Pick the level set to keep loaded and re-issue the wants if it differs from what's wanted now."
+  (when (and *target* (not (fs-city-mission?)))
+    (let* ((pos (-> *target* control trans))
+           (v (-> *target* control transv))
+           (sp (vector-xz-length v))
+           (ahead (new-stack-vector0))
+           (cnow (begin
+                   (set! *fs-stream-present-only?* #t)
+                   ;; where we are: the nearest continue point of a loaded level (accurate in the
+                   ;; cities; the levels' bounding spheres are loose and offset, so geometry is only
+                   ;; the fallback when no loaded level has a continue point in reach)
+                   (let ((c (fs-nearest-continue pos (the-as symbol #f))))
+                     (when (not c)
+                       (let ((under (fs-level-under pos)))
+                         (if under
+                             (set! c (fs-nearest-continue-of pos under))
+                             )
+                         )
+                       )
+                     (when (not c)
+                       ;; flown out of every loaded level's reach: take the nearest spot of any
+                       ;; level, which then gets loaded as "here"
+                       (set! *fs-stream-present-only?* #f)
+                       (set! c (fs-nearest-continue pos (the-as symbol #f)))
+                       (set! *fs-stream-present-only?* #t)
+                       )
+                     c
+                     )
+                   ))
+           (cnext (the-as continue-point #f))
+           (failed? (and *fs-stream-failed*
+                         (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 3))))
+           )
+      (when (and cnow (not (fs-stream-hands-off? (-> cnow level))))
+        (let ((now (-> cnow level))
+              (next (the-as symbol #f))
+              )
+          (set! *fs-stream-cnow* cnow)
+          (vector-copy! ahead pos)
+          ;; after a failed load, stick to this spot's own set for a while
+          (when (and (< (meters 1) sp) (not failed?))
+            ;; look half way and all the way ahead, so the neighbour is never skipped
+            (let ((k (/ (fmin *fs-stream-ahead-max* (fmax *fs-stream-ahead-min* (* sp *fs-stream-ahead*))) sp)))
+              (set! (-> ahead x) (+ (-> pos x) (* (-> v x) (* 0.5 k))))
+              (set! (-> ahead z) (+ (-> pos z) (* (-> v z) (* 0.5 k))))
+              (set! cnext (fs-nearest-continue ahead now))
+              (when (or (not cnext) (= (-> cnext level) now))
+                (set! (-> ahead x) (+ (-> pos x) (* (-> v x) k)))
+                (set! (-> ahead z) (+ (-> pos z) (* (-> v z) k)))
+                (set! cnext (fs-nearest-continue ahead now))
+                )
+              )
+            )
+          (if (and cnext (!= (-> cnext level) now))
+              (set! next (-> cnext level))
+              (set! cnext (the-as continue-point #f))
+              )
+          (when failed?
+            (set! *fs-stream-next* #f)
+            (set! *fs-stream-cnext* (the-as continue-point #f))
+            (set! *fs-stream-cand* #f)
+            )
+          ;; after a teleport or a long walk the remembered levels are stale: forget them
+          (when (< (seconds 2) (- (-> *display* real-clock frame-counter) *fs-stream-last-frame*))
+            (set! *fs-stream-cand* #f)
+            (set! *fs-stream-next* #f)
+            (set! *fs-stream-cnext* (the-as continue-point #f))
+            (set! *fs-stream-prev* #f)
+            )
+          (when (and now (!= now *fs-stream-now*))
+            (set! *fs-stream-prev* *fs-stream-now*)
+            )
+          (set! *fs-stream-last-frame* (-> *display* real-clock frame-counter))
+          ;; a new "next" has to hold for a few decisions before it replaces the old one
+          (cond
+            ((= next *fs-stream-cand*)
+             (set! *fs-stream-cand-n* (+ *fs-stream-cand-n* 1))
+             )
+            (else
+              (set! *fs-stream-cand* next)
+              (set! *fs-stream-cand-n* 1)
+              )
+            )
+          (cond
+            ((and (!= next *fs-stream-next*) (< *fs-stream-cand-n* *fs-stream-settle*) (!= *fs-stream-next* now))
+             ;; not settled yet: keep the previous next (and its continue)
+             (set! next *fs-stream-next*)
+             (set! cnext *fs-stream-cnext*)
+             )
+            (else
+              (set! *fs-stream-next* next)
+              (set! *fs-stream-cnext* cnext)
+              )
+            )
+          (set! *fs-stream-now* now)
+          ;; the level set: the ground under Jak, then what the game loads at the spot ahead,
+          ;; then what it loads here, then any loaded level Jak is still inside of
+          (let ((keep (new 'stack-no-clear 'array 'symbol FS-SLOTS))
+                (disp (new 'stack-no-clear 'array 'symbol FS-SLOTS))
+                (n 0)
+                )
+            (dotimes (i FS-SLOTS)
+              (set! (-> keep i) #f)
+              (set! (-> disp i) #f)
+              )
+            (set! n (fs-stream-add keep disp n now 'display))
+            (cond
+              (cnext
+                ;; two spots: their main levels plus what both spots share (the union of two
+                ;; valid sets can exceed the heap; the shared part plus two mains is what the
+                ;; game itself has when standing at a gate)
+                (set! n (fs-stream-add keep disp n (-> cnext level) 'display))
+                (dotimes (i (fs-want-slots cnext))
+                  (if (fs-continue-wants? cnow (-> cnext want i name))
+                      (set! n (fs-stream-add keep disp n (-> cnext want i name) (-> cnext want i display?)))
+                      )
+                  )
+                (dotimes (i (fs-want-slots cnow))
+                  (if (fs-continue-wants? cnext (-> cnow want i name))
+                      (set! n (fs-stream-add keep disp n (-> cnow want i name) (-> cnow want i display?)))
+                      )
+                  )
+                )
+              (else
+                ;; one spot: the level under Jak, the one he just left while it's still here,
+                ;; plus whatever of this spot's set is already here (never pull in a spot's
+                ;; optional extra -- the arena, an interior -- just for flying past; the gate
+                ;; regions do that on landing)
+                (if (and *fs-stream-prev* (fs-level-present? *fs-stream-prev*))
+                    (set! n (fs-stream-add keep disp n *fs-stream-prev* 'display))
+                    )
+                (dotimes (i (fs-want-slots cnow))
+                  (if (fs-level-present? (-> cnow want i name))
+                      (set! n (fs-stream-add keep disp n (-> cnow want i name) (-> cnow want i display?)))
+                      )
+                  )
+                )
+              )
+            (dotimes (i FS-SLOTS)
+              (let ((nm (-> *load-state* want i name)))
+                (if (and nm (or (= (-> *load-state* want i display?) 'special) ;; always-resident (wasall)
+                                (and (fs-real-level? nm) (not (fs-level-outside? nm pos)))))
+                    (set! n (fs-stream-add keep disp n nm (-> *load-state* want i display?)))
+                    )
+                )
+              )
+            ;; only touch the wants when they'd change (ignoring borrow levels, which the game adds),
+            ;; and never without the level under Jak in the list
+            (let ((same #t)
+                  (have-now #f))
+              (dotimes (i n)
+                (if (= (-> keep i) now)
+                    (set! have-now #t)
+                    )
+                )
+              (dotimes (i n)
+                (let ((found #f))
+                  (dotimes (j FS-SLOTS)
+                    (if (= (-> *load-state* want j name) (-> keep i))
+                        (set! found #t)
+                        )
+                    )
+                  (if (not found)
+                      (set! same #f)
+                      )
+                  )
+                )
+              (dotimes (j FS-SLOTS)
+                (let ((nm (-> *load-state* want j name)))
+                  (when (and nm (not (fs-borrow-level? nm)))
+                    (let ((found #f))
+                      (dotimes (i n)
+                        (if (= (-> keep i) nm)
+                            (set! found #t)
+                            )
+                        )
+                      (if (not found)
+                          (set! same #f)
+                          )
+                      )
+                    )
+                  )
+                )
+              (when (and (not same) have-now)
+                (let ((was *fs-in-want-hook?*))
+                  (set! *fs-in-want-hook?* #t) ;; our own want-levels must not re-enter the hook
+                  (want-levels *load-state* (the-as (pointer symbol) keep))
+                  (set! *fs-in-want-hook?* was)
+                  )
+                (dotimes (i n)
+                  (if (-> disp i)
+                      (want-display-level *load-state* (-> keep i) (-> disp i))
+                      )
+                  )
+                (if *fs-stream-log?*
+                    (format 0 "LVL ~D ~D stream ~A ~A ~,,0M ~,,0M~%" (-> *display* real-clock frame-counter)
+                            (/ (the int (get-cpu-clock)) 300000) now next (-> pos x) (-> pos z))
+                    )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun fs-stream-hook ()
+  "Runs after every want-levels call (see level-h.gc): while flying, re-decide."
+  (if (< (- (-> *display* real-clock frame-counter) *fs-air-frame*) 60)
+      (fs-stream-decide)
+      )
+  (none)
+  )
+(set! *fs-want-levels-hook* fs-stream-hook)
+
+;; ---- ANTI-ABYSS NET ----
+;; If, despite everything, the ground isn't there (a level late or missing), Jak falls through the
+;; world. Below *fs-abyss-y* (far under any street or water) he is put back where he last flew
+;; over solid, loaded ground, instead of dying.
+(define *fs-abyss-y* (meters -25))
+(define *fs-safe-pos* (new 'static 'vector))
+(define *fs-safe-frame* 0)
+(define *fs-abyss-saves* 0)
+
+(defbehavior fs-abyss-net target ()
+  (let ((y (-> self control trans y)))
+    (cond
+      ((and (< *fs-abyss-y* y) (< (meters 3) y) *fs-stream-now* (fs-level-present? *fs-stream-now*))
+       ;; flying over a loaded area: remember it (every half second)
+       (when (< (seconds 0.5) (- (-> *display* real-clock frame-counter) *fs-safe-frame*))
+         (vector-copy! *fs-safe-pos* (-> self control trans))
+         (set! *fs-safe-frame* (-> *display* real-clock frame-counter))
+         )
+       )
+      ((and (< y *fs-abyss-y*) (< 0 *fs-safe-frame*))
+       ;; through the world: back to the last safe spot, a little higher, hovering
+       (set! (-> self control trans quad) (-> *fs-safe-pos* quad))
+       (+! (-> self control trans y) (meters 10))
+       (vector-reset! (-> self control transv))
+       (set! *fs-abyss-saves* (+ *fs-abyss-saves* 1))
+       (format 0 "ABYSS: put Jak back at ~,,0M ~,,0M ~,,0M (~D)~%" (-> *fs-safe-pos* x) (-> *fs-safe-pos* y) (-> *fs-safe-pos* z) *fs-abyss-saves*)
+       )
+      )
+    )
+  (none)
+  )
+
+(defbehavior fs-tick target ()
+  "Per frame while flying, anywhere: the level decision every few frames, and every wanted
+   level that is loaded but undrawn displayed (display is normally switched on by regions at
+   the gates, which flight skips: a loaded district sat undrawn behind a dark cliff)."
+  (set! *fs-air-frame* (-> *display* real-clock frame-counter))
+  (fs-abyss-net)
+  (set! *fs-fast-load-until* (+ (-> *display* real-clock frame-counter) 60)) ;; drain DGOs while flying
+  (set! *fs-vis-from-air?* #t) ;; new levels draw fully from the air (cam-update.gc)
+  (set! *fs-stream-timer* (+ *fs-stream-timer* 1))
+  (when (<= *fs-stream-every* *fs-stream-timer*)
+    (set! *fs-stream-timer* 0)
+    (fs-stream-decide)
+    (when *fs-stream-cnow*
+      (dotimes (i FS-SLOTS)
+        (let ((nm (-> *load-state* want i name)))
+          (when (and nm (not (-> *load-state* want i display?)))
+            ;; displayed if the continue here (or ahead) says so
+            (let ((d (the-as symbol #f)))
+              (dotimes (k (fs-want-slots *fs-stream-cnow*))
+                (if (= (-> *fs-stream-cnow* want k name) nm)
+                    (set! d (-> *fs-stream-cnow* want k display?))
+                    )
+                )
+              (when *fs-stream-cnext*
+                (dotimes (k (fs-want-slots *fs-stream-cnext*))
+                  (if (= (-> *fs-stream-cnext* want k name) nm)
+                      (set! d (-> *fs-stream-cnext* want k display?))
+                      )
+                  )
+                )
+              (if d
+                  (want-display-level *load-state* nm d)
+                  )
+              )
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+

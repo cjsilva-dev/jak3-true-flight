@@ -1,0 +1,50 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: flight-stream-h.gc (Jak 3 / True Flight)
+;; Everything flight-stream.gc needs to know about this game. Keep flight-stream.gc itself identical
+;; to the one in the jak2-dark-flight repo.
+
+(defconstant FS-SLOTS 10) ;; slots in *load-state* want and in a continue point's level set
+
+;; a continue point's level set: Jak 3 stores the count
+(defmacro fs-want-slots (c) `(-> ,c want-count))
+(defun fs-want-named ((c continue-point))
+  (-> c want-count)
+  )
+
+(defun fs-borrow-mode? ((info level-load-info))
+  (let ((m (-> info memory-mode)))
+    (or (= m (level-memory-mode borrow))
+        (= m (level-memory-mode borrow0))
+        (= m (level-memory-mode borrow1))
+        (= m (level-memory-mode borrow2))
+        (= m (level-memory-mode borrow3))
+        (= m (level-memory-mode borrow4))
+        (= m (level-memory-mode borrow-city-small))
+        )
+    )
+  )
+(defun fs-alias-mode? ((info level-load-info))
+  (= (-> info memory-mode) (level-memory-mode alias))
+  )
+(defun fs-edge-mode? ((info level-load-info))
+  (or (= (-> info memory-mode) (level-memory-mode tiny-edge))
+      (= (-> info memory-mode) (level-memory-mode small-edge))
+      )
+  )
+(defun fs-master-level ((info level-load-info))
+  (-> info master-level)
+  )
+
+;; dev/cutscene levels whose continue points sit in the world: never used, never wanted
+(define *fs-stream-exclude* '(ctyfence test-zone title intro introcst inttitle wasintro halfpipe
+                              chartest gregtest hermtest sndtest testisle tobytest vistest))
+;; areas that stream by position on their own: the desert (desert-game is an alias whose expansion
+;; picks the sub-zones by position itself, built for the fast vehicles; wanting zones on top of that
+;; only fights it)
+(define *fs-stream-skip-prefixes* '("des" "wasall"))
+
+(defun fs-city-mission? ()
+  #f ;; Jak 3's city missions use alias levels (ctywide-kg...), which take no bank
+  )
