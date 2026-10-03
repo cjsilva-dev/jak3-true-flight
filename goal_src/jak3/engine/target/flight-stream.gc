@@ -15,9 +15,9 @@
 ;;
 ;; Rules, each with the incident that motivated it:
 ;;  1. "here" = the nearest continue point of a LOADED level, in 3D (interiors and the catacombs have
-;;     continues inside the city's volume; Jak can only be in a loaded level). The levels' bounding
-;;     spheres are only a fallback when no loaded level has a continue in reach: they are loose and
-;;     offset and once unloaded the slums under Jak (Haven corner, 2026-10-02).
+;;     continues inside the city's volume; Jak can only be in a loaded level); out of every loaded
+;;     level's reach, the nearest continue of any level, which then gets loaded. Never the levels'
+;;     bounding spheres: they are loose and offset and once unloaded the slums under Jak (2026-10-02).
 ;;  2. "next" = the nearest continue ahead (half-way and full look-ahead, so a narrow neighbour is
 ;;     never skipped) among NEIGHBOURS: levels whose continue points list each other, checked per
 ;;     level (the nearest continue of a district can be an interior's door; Haven, 2026-10-01).
@@ -173,19 +173,6 @@
     )
   )
 
-(defun fs-continue-preloads? ((c continue-point) (name symbol))
-  "Does this continue point list NAME undisplayed (loaded for the door, not a place to be)?"
-  (let ((yes #f))
-    (dotimes (i (fs-want-slots c))
-      (if (and (= (-> c want i name) name) (not (-> c want i display?)))
-          (set! yes #t)
-          )
-      )
-    yes
-    )
-  )
-
-(define *fs-stream-present-only?* #t) ;; "here" = a loaded level's continue; cleared for the fallback
 (define *fs-stream-spread* (meters 75)) ;; an area's continue points are spread out; an interior's cluster at its door
 
 (defun fs-outdoor-level? ((name symbol))
@@ -280,90 +267,13 @@
     )
   )
 
-(defun fs-nearest-continue-of ((pos vector) (level symbol))
-  "The nearest continue point (3D) belonging to LEVEL, any distance."
-  (let ((best (the-as continue-point #f))
-        (bestd 0.0)
-        (info (lookup-level-info level))
-        )
-    (when info
-      (let ((cl (-> info continues)))
-        (while (not (null? cl))
-          (let ((c (the-as continue-point (car cl))))
-            (when (< 1 (fs-want-named c))
-              (let* ((dx (- (-> c trans x) (-> pos x)))
-                     (dy (- (-> c trans y) (-> pos y)))
-                     (dz (- (-> c trans z) (-> pos z)))
-                     (d (+ (* dx dx) (* dy dy) (* dz dz)))
-                     )
-                (when (or (not best) (< d bestd))
-                  (set! best c)
-                  (set! bestd d)
-                  )
-                )
-              )
-            )
-          (set! cl (cdr cl))
-          )
-        )
-      )
-    best
-    )
-  )
-
-(defun fs-level-under ((pos vector))
-  "The loaded area Jak is in: among the loaded, outdoor, normally displayed levels whose first
-   drawable tree's sphere contains pos, the one with the nearest continue point (the spheres of
-   neighbouring zones overlap a lot: a district inside the city-wide level, desert zones over
-   each other). #f when none."
-  (let ((best (the-as symbol #f))
-        (bestd 0.0)
-        )
-    (dotimes (i LEVEL_MAX)
-      (let ((lv (-> *level* level i)))
-        (when (and (or (= (-> lv status) 'active) (= (-> lv status) 'alive) (= (-> lv status) 'loaded))
-                   (!= (-> lv display?) 'special)
-                   (-> lv bsp)
-                   (nonzero? (-> lv bsp drawable-trees))
-                   (< 0 (-> lv bsp drawable-trees length))
-                   (not (fs-stream-skip-level? (-> lv name)))
-                   (not (fs-master-level? (-> lv name)))
-                   (fs-outdoor-level? (-> lv name))
-                   )
-          (let* ((c (-> lv bsp drawable-trees trees 0 bsphere))
-                 (dx (- (-> pos x) (-> c x)))
-                 (dz (- (-> pos z) (-> c z)))
-                 )
-            (when (< (sqrtf (+ (* dx dx) (* dz dz))) (-> c w))
-              (let ((cp (fs-nearest-continue-of pos (-> lv name))))
-                (when cp
-                  (let* ((ex (- (-> cp trans x) (-> pos x)))
-                         (ey (- (-> cp trans y) (-> pos y)))
-                         (ez (- (-> cp trans z) (-> pos z)))
-                         (d (+ (* ex ex) (* ey ey) (* ez ez)))
-                         )
-                    (when (or (not best) (< d bestd))
-                      (set! best (-> lv name))
-                      (set! bestd d)
-                      )
-                    )
-                  )
-                )
-              )
-            )
-          )
-        )
-      )
-    best
-    )
-  )
-
-(defun fs-nearest-continue ((pos vector) (near symbol))
-  "The continue point nearest to pos, skipping dev levels and continues that don't list a real
-   level set (ctyfence-start wants only itself, and ctyfence has no file). With NEAR, only
-   continues of NEAR itself or of its neighbours count: levels whose continues list NEAR, or
-   that NEAR's continues list. (Interiors and the catacombs have continue points inside the
-   city's volume; the game's own lists say what connects to what.)"
+(defun fs-nearest-continue ((pos vector) (near symbol) (any? symbol))
+  "The continue point nearest to pos, skipping dev levels, master levels, interiors and continues
+   that don't list a real level set (ctyfence-start wants only itself, and ctyfence has no file).
+   With NEAR, only continues of NEAR itself or of its neighbours count: levels whose continues
+   list NEAR, or that NEAR's continues list (interiors and the catacombs have continue points
+   inside the city's volume; the game's own lists say what connects to what). Without NEAR, only
+   continues of loaded levels (Jak can only be in one), unless ANY? asks for every level."
   (let ((best (the-as continue-point #f))
         (bestd 0.0)
         (lst *level-load-list*)
@@ -389,7 +299,7 @@
                                     (let ((ni (lookup-level-info near)))
                                       (not (and ni (= (fs-master-level ni) (-> c level)))))
                                     )
-                               (or (not *fs-stream-present-only?*)
+                               (or any?
                                    (fs-level-present? (-> c level))) ;; the spot we're at: a level we have
                                )
                            )
@@ -436,10 +346,6 @@
 (defun fs-stream-add ((keep (pointer symbol)) (disp (pointer symbol)) (n int) (name symbol) (d symbol))
   "Append name (with its display flag) to the keep list unless it's there, excluded or just
    failed. A sub-level's master level goes in ahead of it (the game asserts otherwise)."
-  (if (and name *fs-stream-log?* (= name *fs-stream-failed*)
-           (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10)))
-      (format 0 "LVL ~D ~D skip-failed ~A~%" (-> *display* real-clock frame-counter) (/ (the int (get-cpu-clock)) 300000) name)
-      )
   (when (and name
              (< n FS-SLOTS)
              (not (fs-stream-skip-level? name))
@@ -487,28 +393,11 @@
            (v (-> *target* control transv))
            (sp (vector-xz-length v))
            (ahead (new-stack-vector0))
-           (cnow (begin
-                   (set! *fs-stream-present-only?* #t)
-                   ;; where we are: the nearest continue point of a loaded level (accurate in the
-                   ;; cities; the levels' bounding spheres are loose and offset, so geometry is only
-                   ;; the fallback when no loaded level has a continue point in reach)
-                   (let ((c (fs-nearest-continue pos (the-as symbol #f))))
-                     (when (not c)
-                       (let ((under (fs-level-under pos)))
-                         (if under
-                             (set! c (fs-nearest-continue-of pos under))
-                             )
-                         )
-                       )
-                     (when (not c)
-                       ;; flown out of every loaded level's reach: take the nearest spot of any
-                       ;; level, which then gets loaded as "here"
-                       (set! *fs-stream-present-only?* #f)
-                       (set! c (fs-nearest-continue pos (the-as symbol #f)))
-                       (set! *fs-stream-present-only?* #t)
-                       )
-                     c
-                     )
+           ;; where we are: the nearest continue point of a loaded level (the levels' bounding
+           ;; spheres are loose and offset: never use them for this); flown out of every loaded
+           ;; level's reach, the nearest spot of any level, which then gets loaded as "here"
+           (cnow (let ((c (fs-nearest-continue pos (the-as symbol #f) #f)))
+                   (if c c (fs-nearest-continue pos (the-as symbol #f) #t))
                    ))
            (cnext (the-as continue-point #f))
            (failed? (and *fs-stream-failed*
@@ -526,11 +415,11 @@
             (let ((k (/ (fmin *fs-stream-ahead-max* (fmax *fs-stream-ahead-min* (* sp *fs-stream-ahead*))) sp)))
               (set! (-> ahead x) (+ (-> pos x) (* (-> v x) (* 0.5 k))))
               (set! (-> ahead z) (+ (-> pos z) (* (-> v z) (* 0.5 k))))
-              (set! cnext (fs-nearest-continue ahead now))
+              (set! cnext (fs-nearest-continue ahead now #f))
               (when (or (not cnext) (= (-> cnext level) now))
                 (set! (-> ahead x) (+ (-> pos x) (* (-> v x) k)))
                 (set! (-> ahead z) (+ (-> pos z) (* (-> v z) k)))
-                (set! cnext (fs-nearest-continue ahead now))
+                (set! cnext (fs-nearest-continue ahead now #f))
                 )
               )
             )
