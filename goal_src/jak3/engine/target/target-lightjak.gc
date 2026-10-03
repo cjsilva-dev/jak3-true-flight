@@ -3309,6 +3309,8 @@
         (set! (-> self pending-ext-anim) (target-anim dark))
         )
     (set! *true-flight-cam?* #t)
+    ;; the plunge is still flight: streaming, the game's current level and the abyss net keep running
+    (fs-tick)
     )
   :code (behavior ()
     (sound-play "ltjak-flap")

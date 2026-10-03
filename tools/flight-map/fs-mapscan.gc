@@ -1,0 +1,142 @@
+;; DEV ONLY (not part of the mods): scan one loaded level's real ground into the game log, for the
+;; flight streamer's ground map (flight-map.gc). Works in Jak 2 and Jak 3.
+;; (ml "goal_src/jakN/fs-mapscan.gc"), stand anywhere with the level active, then (fs-mapscan 'level).
+;; Cell = 16 m. Four rays per cell, straight down from 600 m, against THIS level's collision only
+;; (the other levels are hidden from the collision query for the duration of the call). A cell's
+;; value is the lowest of its hits (street level rather than a roof), 0 when nothing was hit:
+;;   byte = (height + 130 m) / 2 m + 1, clamped to 1..255.
+(define *ms-cell* (meters 16))
+
+(defun ms-probe ((x float) (z float))
+  "Height of the top surface at x z, or -1e9."
+  (let ((q (new 'stack-no-clear 'collide-query)))
+    (set-vector! (-> q start-pos) x (meters 600) z 1.0)
+    (set-vector! (-> q move-dist) 0.0 (meters -1000) 0.0 1.0)
+    (set! (-> q radius) 40.96)
+    (set! (-> q collide-with) (collide-spec backgnd))
+    (set! (-> q ignore-process0) #f)
+    (set! (-> q ignore-process1) #f)
+    (set! (-> q ignore-pat) (new 'static 'pat-surface :noentity #x1 :nojak #x1 :probe #x1 :noendlessfall #x1))
+    (set! (-> q action-mask) (collide-action solid))
+    (if (>= (fill-and-probe-using-line-sphere *collide-cache* q) 0.0)
+        (-> q best-other-tri intersect y)
+        -1000000000.0)))
+
+(defun fs-mapscan ((name symbol))
+  (let ((lev (the-as level #f))
+        (saved (new 'stack-no-clear 'array 'symbol 16)))
+    (dotimes (i (-> *level* length))
+      (let ((l (-> *level* level i)))
+        (set! (-> saved i) (-> l status))
+        (if (and (= (-> l name) name) (= (-> l status) 'active))
+            (set! lev l))))
+    (cond
+      ((not lev)
+       (format 0 "MS-FAIL ~A not active~%" name))
+      ((zero? (-> lev bsp collide-hash))
+       (format 0 "MS-FAIL ~A no collision~%" name))
+      (else
+        ;; hide the other levels from the collision query
+        (dotimes (i (-> *level* length))
+          (let ((l (-> *level* level i)))
+            (if (and (!= l lev) (= (-> l status) 'active))
+                (set! (-> l status) 'loaded))))
+        (let* ((ch (-> lev bsp collide-hash))
+               (cell *ms-cell*)
+               (x0 (the int (floor (/ (-> ch bbox min x) cell))))
+               (z0 (the int (floor (/ (-> ch bbox min z) cell))))
+               ;; the hash grid's dimensions are three BYTES packed in the first dimension word
+               ;; (x, y, z buckets), each bucket grid-step wide
+               (dw (the-as int (-> ch dimension-array 0)))
+               (dx (logand dw 255))
+               (dz (logand (shr dw 16) 255))
+               (x1 (the int (floor (/ (+ (-> ch bbox min x) (* (-> ch grid-step x) (the float dx))) cell))))
+               (z1 (the int (floor (/ (+ (-> ch bbox min z) (* (-> ch grid-step z) (the float dz))) cell))))
+               (nx (min 300 (+ 1 (- x1 x0))))
+               (nz (min 300 (+ 1 (- z1 z0))))
+               (hits 0))
+          (format 0 "MS ~A ~D ~D ~D ~D~%" name x0 z0 nx nz)
+          (dotimes (iz nz)
+            (format 0 "MR ~A ~D" name iz)
+            (dotimes (ix nx)
+              (let ((best 1000000000.0)
+                    (bx (* cell (the float (+ x0 ix))))
+                    (bz (* cell (the float (+ z0 iz)))))
+                (dotimes (s 4)
+                  (let ((h (ms-probe (+ bx (* cell (if (logtest? s 1) 0.75 0.25)))
+                                     (+ bz (* cell (if (logtest? s 2) 0.75 0.25))))))
+                    (if (and (< -900000000.0 h) (< h best))
+                        (set! best h))))
+                (cond
+                  ((< best 900000000.0)
+                   (set! hits (+ hits 1))
+                   (format 0 " ~D" (max 1 (min 255 (+ 1 (the int (/ (+ best (meters 130)) (meters 2))))))))
+                  (else
+                    (format 0 " 0")))))
+            (format 0 "~%"))
+          (format 0 "MSEND ~A ~D~%" name hits))
+        (dotimes (i (-> *level* length))
+          (set! (-> *level* level i status) (-> saved i))))))
+  0)
+
+(defun ms-go ((name symbol))
+  "Teleport to a continue point of level NAME (its '-start' one when it has one)."
+  (let ((info (lookup-level-info name))
+        (best (the-as continue-point #f)))
+    (when (and info (!= info default-level))
+      (let ((cl (-> info continues)))
+        (while (not (null? cl))
+          (let ((c (the-as continue-point (car cl))))
+            (when (= (-> c level) name)
+              (if (not best) (set! best c))
+              (if (string= (-> c name) (string-format "~A-start" name)) (set! best c))))
+          (set! cl (cdr cl)))))
+    (cond
+      (best
+        (format 0 "MG ~A via ~S~%" name (-> best name))
+        (start 'play best))
+      (else
+        (format 0 "MG-FAIL ~A no continue~%" name))))
+  0)
+
+(defun ms-status ((name symbol))
+  (let ((st 'none))
+    (dotimes (i (-> *level* length))
+      (if (= (-> *level* level i name) name)
+          (set! st (-> *level* level i status))))
+    (format 0 "MQ ~A ~A~%" name st))
+  0)
+
+(defun ms-go-c ((cname string))
+  "Teleport to a continue point by name (for levels whose '-start' continue expects mission state)."
+  (let ((c (get-continue-by-name *game-info* cname)))
+    (cond
+      (c (format 0 "MG via ~S~%" cname) (start 'play c))
+      (else (format 0 "MG-FAIL no continue ~S~%" cname))))
+  0)
+
+(define *ms-last-want* (the-as symbol #f))
+(define *ms-last-master* (the-as symbol #f))
+(defun ms-want ((name symbol) (master symbol))
+  "Load level NAME where Jak stands, without teleporting (some continues expect mission state and
+   crash): the current wants stay, except what the previous ms-want added. MASTER (or #f) is the
+   level NAME depends on (Jak 3 master-level); it goes in first."
+  (let ((names (new 'stack-no-clear 'array 'symbol 10))
+        (n 0))
+    (dotimes (i 10) (set! (-> names i) #f))
+    (dotimes (i (-> *level* length))
+      (let ((nm (-> *load-state* want i name)))
+        (when (and nm (< n 8) (!= nm name) (!= nm master) (!= nm *ms-last-want*) (!= nm *ms-last-master*))
+          (set! (-> names n) nm)
+          (set! n (+ n 1)))))
+    (when master
+      (set! (-> names n) master)
+      (set! n (+ n 1)))
+    (set! (-> names n) name)
+    (set! *ms-last-want* name)
+    (set! *ms-last-master* master)
+    (want-levels *load-state* names)
+    (if master (want-display-level *load-state* master 'display))
+    (want-display-level *load-state* name 'display)
+    (format 0 "MG ~A by want (~D kept)~%" name n))
+  0)
