@@ -40,6 +40,9 @@
 ;;     flying, he goes back above the last spot where a ray straight down hit ground, and the
 ;;     streamer's state is dumped to the log (Haven corner, 2026-10-02; a fixed -25 m line sat
 ;;     below Haven's own -15 m death line and never fired in a real fall, 2026-10-03).
+;; 11. With solid ground right below a flying Jak, the game's death line doesn't apply: its
+;;     "current level" can be a neighbour's after crossing level volumes from the air (the arena's
+;;     +10 m lava line over Spargus's 8 m street killed a slam off the arena stairs, 2026-10-03).
 
 ;; ---- LEVEL STREAMING WHILE FLYING (any area) ----
 (define *fs-stream-timer* 0) ;; frames since the last decision
@@ -636,41 +639,70 @@
   (none)
   )
 
+(define *fs-probe-y* 0.0) ;; where the last ray hit
+(defun fs-ground-below? ((pos vector))
+  "Cast a ray straight down from pos: is there solid ground no further down than *fs-safe-probe* (its height
+   goes to *fs-probe-y*)?"
+  (let ((q (new 'stack-no-clear 'collide-query)))
+    (vector-copy! (-> q start-pos) pos)
+    (+! (-> q start-pos y) (meters 1))
+    (set-vector! (-> q move-dist) 0.0 (- *fs-safe-probe*) 0.0 1.0)
+    (set! (-> q radius) 40.96)
+    (set! (-> q collide-with) (collide-spec backgnd))
+    (set! (-> q ignore-process0) #f)
+    (set! (-> q ignore-process1) #f)
+    (set! (-> q ignore-pat) (new 'static 'pat-surface :noentity #x1 :nojak #x1 :probe #x1 :noendlessfall #x1))
+    (set! (-> q action-mask) (collide-action solid))
+    (cond
+      ((>= (fill-and-probe-using-line-sphere *collide-cache* q) 0.0)
+       (set! *fs-probe-y* (-> q best-other-tri intersect y))
+       #t
+       )
+      (else
+        #f
+        )
+      )
+    )
+  )
+
 (defbehavior fs-abyss-net target ()
   "Twice a second while flying: remember this spot if there is solid ground straight below."
   (let ((now (-> *display* real-clock frame-counter)))
     (when (< (seconds 0.5) (- now *fs-safe-probe-frame*))
       (set! *fs-safe-probe-frame* now)
-      (let ((q (new 'stack-no-clear 'collide-query)))
-        (vector-copy! (-> q start-pos) (-> self control trans))
-        (+! (-> q start-pos y) (meters 1))
-        (set-vector! (-> q move-dist) 0.0 (- *fs-safe-probe*) 0.0 1.0)
-        (set! (-> q radius) 40.96)
-        (set! (-> q collide-with) (collide-spec backgnd))
-        (set! (-> q ignore-process0) #f)
-        (set! (-> q ignore-process1) #f)
-        (set! (-> q ignore-pat) (new 'static 'pat-surface :noentity #x1 :nojak #x1 :probe #x1 :noendlessfall #x1))
-        (set! (-> q action-mask) (collide-action solid))
-        (when (>= (fill-and-probe-using-line-sphere *collide-cache* q) 0.0)
-          (vector-copy! *fs-safe-pos* (-> self control trans))
-          (set! *fs-safe-ground-y* (-> q best-other-tri intersect y))
-          (set! *fs-safe-frame* now)
-          )
+      (when (fs-ground-below? (-> self control trans))
+        (vector-copy! *fs-safe-pos* (-> self control trans))
+        (set! *fs-safe-ground-y* *fs-probe-y*)
+        (set! *fs-safe-frame* now)
         )
       )
     )
   (none)
   )
 
+(define *fs-veto-frame* 0)
 (defun fs-endlessfall-rescue ()
   "The game is about to kill Jak for falling out of the world (logic-target.gc). If he was flying
-   moments ago and a spot over solid ground is fresh, put him back there, hovering, and say so
-   (#t: no death). Otherwise #f, and the game carries on as it always did."
+   moments ago: with solid ground right below, it isn't a fall out of the world at all, he just
+   lands (#t: no death). Flight crosses level volumes from sides nobody walks through, so the
+   game's current level can be a neighbour with a higher death line: the arena's lava line is at
+   +10 m, Spargus's street beside its stairs at 8 m, and a slam off those stairs killed Jak
+   (2026-10-03). With nothing below and a fresh spot over solid ground, put him back there,
+   hovering, and say so (#t). Otherwise #f, and the game carries on as it always did."
   (let ((now (-> *display* real-clock frame-counter))
         (saved #f)
         )
     (when (and *target* (< (- now *fs-air-frame*) (seconds 10)))
       (cond
+        ((fs-ground-below? (-> *target* control trans))
+         (when (< (seconds 5) (- now *fs-veto-frame*))
+           (set! *fs-veto-frame* now)
+           (format 0 "FS: ground below Jak, the death line of ~A doesn't apply (~,,0M ~,,0M ~,,0M)~%"
+                   (if (-> *target* current-level) (-> *target* current-level name) #f)
+                   (-> *target* control trans x) (-> *target* control trans y) (-> *target* control trans z))
+           )
+         (set! saved #t)
+         )
         ((and (< 0 *fs-safe-frame*) (< (- now *fs-safe-frame*) *fs-safe-max-age*))
          (fs-dump "ABYSS")
          (let ((ctrl (-> *target* control)))
