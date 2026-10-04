@@ -41,10 +41,14 @@
 ;;     (adapter: fs-self-streamed-area?); and if the wants still get changed back more than a few
 ;;     times a second, the streamer backs off for 5 s (the garage between Spargus and the desert,
 ;;     2026-10-03: a frame-by-frame tug of war, then the crash of rule 5).
+;; 10. Flight wall: where flight leads to ground the mod can't load, Jak stops (see FLIGHT WALL).
+;;     Switched on per area in the adapter; first for Spargus, whose only neighbour is the desert.
 ;;  6. The game's "current level" follows the map too (want-vis-level): its own test goes by level
 ;;     boxes, which overlap and which flight enters from sides nobody walks through.
 ;;  7. Anti-abyss net: when the game is about to kill Jak for falling out of the world right after
-;;     flying, he goes back above the last spot where a ray straight down hit ground, and the
+;;     flying, he goes back above the last spot where a ray straight down hit ground (a spot saved
+;;     in the same unbroken flight never goes stale: a long glide out over nothing ends back at
+;;     the edge he left, not in a death), and the
 ;;     streamer's state is dumped to the log (a fixed -25 m line sat below Haven's own -15 m death
 ;;     line and never fired in a real fall, 2026-10-03).
 ;;  8. With solid ground right below a flying Jak, the game's death line doesn't apply (the arena's
@@ -506,7 +510,8 @@
 (define *fs-safe-frame* 0)                   ;; when that was (0 = never)
 (define *fs-safe-probe-frame* 0)             ;; when the ray was last cast
 (define *fs-safe-probe* (meters 150))        ;; how far down the ray looks
-(define *fs-safe-max-age* (seconds 20))      ;; an older spot isn't trusted (teleports, long drops)
+(define *fs-safe-max-age* (seconds 20))      ;; an older spot isn't trusted (teleports, long drops)...
+(define *fs-air-since* 0)                    ;; ...unless it was saved in this same unbroken flight (began here)
 (define *fs-safe-lift* (meters 10))          ;; Jak is put back at least this far above the ground
 (define *fs-abyss-saves* 0)
 (define *fs-dump-frame* 0)
@@ -605,7 +610,11 @@
            )
          (set! saved #t)
          )
-        ((and (< 0 *fs-safe-frame*) (< (- now *fs-safe-frame*) *fs-safe-max-age*))
+        ((and (< 0 *fs-safe-frame*)
+              (or (< (- now *fs-safe-frame*) *fs-safe-max-age*)
+                  ;; saved during this same unbroken flight: still the place he flew out from,
+                  ;; however long the glide over nothing was
+                  (<= *fs-air-since* *fs-safe-frame*)))
          (fs-dump "ABYSS")
          (let ((ctrl (-> *target* control)))
            (set! (-> ctrl trans quad) (-> *fs-safe-pos* quad))
@@ -627,12 +636,162 @@
   )
 (set! *fs-endlessfall-hook* fs-endlessfall-rescue)
 
+;; ---- FLIGHT WALL (rule 10) ----
+;; Where flight leads to ground the mod can't load, Jak stops instead of falling: at the edge of an
+;; area the wall is switched on for (adapter: *fs-wall-levels*; flight-map.gc holds each area's
+;; allowed cells), and, while the desert is loaded, at that area's ground whose level isn't loaded.
+;; Only leaving is blocked: taking off outside, or coming back in, is never stopped. It works on
+;; Jak's position (he is put back on the last allowed spot, sliding along the wall when one axis
+;; of the move is fine), so nothing the flight code does to his velocity later in the frame matters.
+(define *fs-wall?* #t)
+(define *fs-wall-pos* (new 'static 'vector)) ;; the last allowed spot
+(define *fs-wall-frame* 0)                   ;; when it was recorded (0 = no wall until he's inside again)
+(define *fs-wall-log-frame* 0)
+(define *fs-wall-stops* 0)
+
+(defun fs-wall-group ()
+  "The area the wall is switched on for, or -1."
+  (let ((g -1)
+        (l *fs-wall-levels*)
+        )
+    (while (not (null? l))
+      (dotimes (k (-> *fs-map-names* length))
+        (if (= (-> *fs-map-names* k) (car l))
+            (set! g (the-as int (-> *fs-map-groups* k)))
+            )
+        )
+      (set! l (cdr l))
+      )
+    g
+    )
+  )
+
+(defun fs-area-inside? ((pos vector) (grp int))
+  "Is pos over the allowed cells of area GRP (ground, enclosed water, margin)?"
+  (let* ((d (* grp 5))
+         (ix (- (the int (floor (/ (-> pos x) FS-MAP-CELL))) (-> *fs-map-area-dims* d)))
+         (iz (- (the int (floor (/ (-> pos z) FS-MAP-CELL))) (-> *fs-map-area-dims* (+ d 1))))
+         (nx (-> *fs-map-area-dims* (+ d 2)))
+         )
+    (and (>= ix 0)
+         (>= iz 0)
+         (< ix nx)
+         (< iz (-> *fs-map-area-dims* (+ d 3)))
+         (nonzero? (-> *fs-map-area-cells* (+ (-> *fs-map-area-dims* (+ d 4)) (* iz nx) ix)))
+         )
+    )
+  )
+
+(defun fs-level-active? ((name symbol))
+  (let ((yes #f))
+    (dotimes (i LEVEL_MAX)
+      (if (and (= (-> *level* level i name) name) (= (-> *level* level i status) 'active))
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-wall-allowed? ((pos vector))
+  "May a flying Jak be at pos?"
+  (let ((wg (fs-wall-group)))
+    (cond
+      ((< wg 0)
+       #t
+       )
+      ((fs-self-streamed-area?)
+       ;; the desert is loaded: anywhere, except over ground of the walled area whose level
+       ;; isn't loaded (the city behind its wall; the garage is the way in)
+       (set! *fs-map-group* wg)
+       (let ((lv (fs-map-at pos (meters 2000))))
+         (or (not lv) (fs-level-active? lv))
+         )
+       )
+      ((= (fs-map-find-group) wg)
+       (fs-area-inside? pos wg)
+       )
+      (else
+        #t
+        )
+      )
+    )
+  )
+
+(defbehavior fs-wall target ()
+  (when *fs-wall?*
+    (let* ((c (-> self control))
+           (pos (-> c trans))
+           (now (-> *display* real-clock frame-counter))
+           (dx (- (-> pos x) (-> *fs-wall-pos* x)))
+           (dz (- (-> pos z) (-> *fs-wall-pos* z)))
+           )
+      (cond
+        ((fs-wall-allowed? pos)
+         (vector-copy! *fs-wall-pos* pos)
+         (set! *fs-wall-frame* now)
+         )
+        ((and (< 0 *fs-wall-frame*)
+              (< (- now *fs-wall-frame*) (seconds 0.5))
+              (< (+ (* dx dx) (* dz dz)) (* (meters 30) (meters 30)))
+              )
+         ;; just crossed the wall. Keep the part of the move that is allowed (slide), else stay.
+         (let ((try (new 'stack-no-clear 'vector)))
+           (vector-copy! try pos)
+           (set! (-> try z) (-> *fs-wall-pos* z))
+           (cond
+             ((fs-wall-allowed? try)
+              (set! (-> pos z) (-> try z))
+              (set! (-> c transv z) 0.0)
+              )
+             (else
+               (vector-copy! try pos)
+               (set! (-> try x) (-> *fs-wall-pos* x))
+               (cond
+                 ((fs-wall-allowed? try)
+                  (set! (-> pos x) (-> try x))
+                  (set! (-> c transv x) 0.0)
+                  )
+                 (else
+                   (set! (-> pos x) (-> *fs-wall-pos* x))
+                   (set! (-> pos z) (-> *fs-wall-pos* z))
+                   (set! (-> c transv x) 0.0)
+                   (set! (-> c transv z) 0.0)
+                   )
+                 )
+               )
+             )
+           )
+         (vector-copy! *fs-wall-pos* pos)
+         (set! *fs-wall-frame* now)
+         (set! *fs-wall-stops* (+ *fs-wall-stops* 1))
+         (when (< (seconds 5) (- now *fs-wall-log-frame*))
+           (set! *fs-wall-log-frame* now)
+           (format 0 "FS: wall at ~,,0M ~,,0M ~,,0M~%" (-> pos x) (-> pos y) (-> pos z))
+           )
+         )
+        (else
+          ;; outside without having just crossed (took off out here, a teleport, a rescue): free
+          ;; until he is back inside
+          (set! *fs-wall-frame* 0)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
 (defbehavior fs-tick target ()
   "Per frame while flying, anywhere: the level decision every few frames, and every wanted
    mapped level that is loaded but undrawn displayed (display is normally switched on by regions
    at the gates, which flight skips: a loaded district sat undrawn behind a dark cliff)."
+  ;; a gap in the ticks means a new flight began (the abyss net trusts spots saved since then)
+  (if (< 30 (- (-> *display* real-clock frame-counter) *fs-air-frame*))
+      (set! *fs-air-since* (-> *display* real-clock frame-counter))
+      )
   (set! *fs-air-frame* (-> *display* real-clock frame-counter))
   (fs-abyss-net)
+  (fs-wall)
   (set! *fs-fast-load-until* (+ (-> *display* real-clock frame-counter) 60)) ;; drain DGOs while flying
   (set! *fs-vis-from-air?* #t) ;; new levels draw fully from the air (cam-update.gc)
   (set! *fs-stream-timer* (+ *fs-stream-timer* 1))

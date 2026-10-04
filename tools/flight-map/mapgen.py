@@ -74,6 +74,48 @@ def load(path):
 
 def height(b): return (b - 1) * 2 - 130
 
+AREA_MARGIN = 3  # cells (48 m) a flying Jak may go past the last ground of an area
+AREA_CLOSE = 10  # bays and notches up to about 20 cells (320 m) across count as part of the area
+
+def areas(levels, grp):
+    """Per area group, the cells a flying Jak may be over: every level's ground, the cells a level
+    encloses on all four sides with its own ground (the water inside a port), narrow bays and notches
+    (AREA_CLOSE), and AREA_MARGIN cells around that. One grid per group."""
+    out = []
+    names = list(levels)
+    for g in sorted(set(grp)):
+        mem = [levels[n] for n, k in zip(names, grp) if k == g]
+        pad = AREA_MARGIN + AREA_CLOSE + 1
+        x0 = min(l['x0'] for l in mem) - pad; z0 = min(l['z0'] for l in mem) - pad
+        x1 = max(l['x0'] + l['nx'] for l in mem) + pad; z1 = max(l['z0'] + l['nz'] for l in mem) + pad
+        W, H = x1 - x0, z1 - z0
+        m = [[0] * W for _ in range(H)]
+        for l in mem:
+            gr = l['g']
+            for iz in range(l['nz']):
+                for ix in range(l['nx']):
+                    if gr[iz][ix] or (any(gr[iz][:ix]) and any(gr[iz][ix + 1:]) and any(r[ix] for r in gr[:iz]) and any(r[ix] for r in gr[iz + 1:])):
+                        m[l['z0'] + iz - z0][l['x0'] + ix - x0] = 1
+        def grow(m, k, val):
+            # k rounds of 8-neighbour growth of the cells equal to val (growing 0 = shrinking the area)
+            for _ in range(k):
+                n2 = [r[:] for r in m]
+                for z in range(H):
+                    for x in range(W):
+                        if m[z][x] != val and any((0 <= z + dz < H and 0 <= x + dx < W and m[z + dz][x + dx] == val) or
+                                                  (val == 0 and not (0 <= z + dz < H and 0 <= x + dx < W))
+                                                  for dz in (-1, 0, 1) for dx in (-1, 0, 1)):
+                            n2[z][x] = val
+                m = n2
+            return m
+        # close bays and notches narrower than about 2 * AREA_CLOSE cells (a small bay between two
+        # halves of a city is flown across, not around), without moving the outer edge
+        closed = grow(grow(m, AREA_CLOSE, 1), AREA_CLOSE, 0)
+        m = [[1 if m[z][x] or closed[z][x] else 0 for x in range(W)] for z in range(H)]
+        m = grow(m, AREA_MARGIN, 1)
+        out.append(dict(x0=x0, z0=z0, nx=W, nz=H, g=m))
+    return out
+
 def emit(game, levels, path, grp):
     names = list(levels)
     cells = []; dims = []
@@ -109,6 +151,22 @@ def emit(game, levels, path, grp):
     o.append(f"(define *fs-map-cells* (new 'static 'array uint8 {len(cells)}")
     for i in range(0, len(cells), 40):
         o.append('  ' + ' '.join(str(v) for v in cells[i:i + 40]))
+    o.append('  ))')
+    # the cells a flying Jak may be over, one grid per area (the flight wall)
+    ar = areas(levels, grp)
+    adims = []; acells = []
+    for a in ar:
+        adims += [a['x0'], a['z0'], a['nx'], a['nz'], len(acells)]
+        for r in a['g']: acells += r
+    o.append(';; per area: the cells a flying Jak may be over (1): ground, water a level encloses, and a margin of')
+    o.append(f';; {AREA_MARGIN} cells. x0 z0 nx nz and the start of its grid in *fs-map-area-cells*. Used by the flight wall.')
+    o.append(f"(define *fs-map-area-dims* (new 'static 'array int32 {len(adims)}")
+    for i in range(0, len(adims), 5):
+        o.append('                             ' + ' '.join(str(v) for v in adims[i:i + 5]))
+    o.append('                             ))')
+    o.append(f"(define *fs-map-area-cells* (new 'static 'array uint8 {len(acells)}")
+    for i in range(0, len(acells), 60):
+        o.append('  ' + ' '.join(str(v) for v in acells[i:i + 60]))
     o.append('  ))')
     open(path, 'w').write('\n'.join(o) + '\n')
     return len(cells)
