@@ -35,3 +35,19 @@
 (defun fs-city-mission? ()
   #f ;; Jak 3's city missions use alias levels (ctywide-kg...), which take no bank
   )
+
+(defun fs-self-streamed-area? ()
+  "The desert is loaded: desert-game is an alias level whose expansion picks the desert's sub-zones
+   by position every frame (built for the fast vehicles). The streamer leaves the level list alone
+   while any des* level is wanted; getting between Spargus and the desert is the garage's job."
+  (let ((yes #f))
+    (dotimes (i FS-SLOTS)
+      (let ((nm (-> *load-state* want i name)))
+        (if (and nm (string-prefix= "des" (symbol->string nm)))
+            (set! yes #t)
+            )
+        )
+      )
+    yes
+    )
+  )

@@ -32,8 +32,15 @@
 ;;     left to the game's own triggers (the desert streams itself, interiors can't be out-flown).
 ;;     The map only answers within the area Jak is in (the group of a level that is loaded now):
 ;;     worlds overlap in coordinates, and west of Spargus it once answered "Haven's slums".
-;;  5. load-begin no longer stops the game when a level doesn't fit (level.gc): the want is dropped
-;;     and remembered, so a wrong pick costs a late load, never a crash (mountain+forest, 2026-09-30).
+;;  5. A level that doesn't fit, or whose master isn't loaded, no longer stops the game (level.gc):
+;;     the want is dropped with everything that depends on it, and remembered, so a wrong pick
+;;     costs a late load, never a crash (mountain+forest, 2026-09-30; wascitya next to a loaded
+;;     desert, 2026-10-03).
+;;  9. Never fight the game for the level list. While an area that streams itself is loaded (the
+;;     Jak 3 desert: its alias level picks sub-zones by position every frame), nothing is decided
+;;     (adapter: fs-self-streamed-area?); and if the wants still get changed back more than a few
+;;     times a second, the streamer backs off for 5 s (the garage between Spargus and the desert,
+;;     2026-10-03: a frame-by-frame tug of war, then the crash of rule 5).
 ;;  6. The game's "current level" follows the map too (want-vis-level): its own test goes by level
 ;;     boxes, which overlap and which flight enters from sides nobody walks through.
 ;;  7. Anti-abyss net: when the game is about to kill Jak for falling out of the world right after
@@ -61,6 +68,10 @@
 (define *fs-stream-cand-n* 0)
 (define *fs-stream-last-frame* 0)          ;; when the last decision ran
 (define *fs-stream-prev* #f)               ;; the level Jak just left (kept until a new "next" shows up)
+(define *fs-stream-fight-frame* 0)         ;; rule 9: start of the current one-second window...
+(define *fs-stream-fight-n* 0)             ;; ...and how often the wants were re-issued in it
+(define *fs-stream-fight-max* 4)
+(define *fs-stream-backoff-until* 0)       ;; no decisions before this frame
 
 (defun fs-mapped? ((name symbol))
   "Is this level one of the areas in the ground map?"
@@ -205,8 +216,14 @@
    load. A sub-level's master level goes in ahead of it (the game asserts otherwise)."
   (when (and name
              (< n FS-SLOTS)
-             (not (and (= name *fs-stream-failed*)
-                       (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10))))
+             ;; not a level that just failed to load, nor one whose master just did
+             (not (and *fs-stream-failed*
+                       (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10))
+                       (or (= name *fs-stream-failed*)
+                           (let ((info (lookup-level-info name)))
+                             (and info (= (fs-master-level info) *fs-stream-failed*)))
+                           )
+                       ))
              )
     (let ((dup #f))
       (dotimes (i n)
@@ -244,7 +261,11 @@
 
 (defun fs-stream-decide ()
   "Pick the level set to keep loaded and re-issue the wants if it differs from what's wanted now."
-  (when (and *target* (not (fs-city-mission?)))
+  (when (and *target*
+             (not (fs-city-mission?))
+             (not (fs-self-streamed-area?))
+             (< *fs-stream-backoff-until* (-> *display* real-clock frame-counter))
+             )
     (set! *fs-map-group* (fs-map-find-group))
     (let* ((pos (-> *target* control trans))
            (v (-> *target* control transv))
@@ -420,6 +441,17 @@
                 )
               )
             (when (and (not same) have-here)
+              ;; rule 9: something else keeps changing the level set back (more than
+              ;; *fs-stream-fight-max* re-issues within a second): stop for a while
+              (when (< (seconds 1) (- frame *fs-stream-fight-frame*))
+                (set! *fs-stream-fight-frame* frame)
+                (set! *fs-stream-fight-n* 0)
+                )
+              (set! *fs-stream-fight-n* (+ *fs-stream-fight-n* 1))
+              (when (< *fs-stream-fight-max* *fs-stream-fight-n*)
+                (set! *fs-stream-backoff-until* (+ frame (seconds 5)))
+                (format 0 "FS: the level set keeps being changed back, hands off for 5 s (~A ~A)~%" here next)
+                )
               (let ((was *fs-in-want-hook?*))
                 (set! *fs-in-want-hook?* #t) ;; our own want-levels must not re-enter the hook
                 (want-levels *load-state* (the-as (pointer symbol) keep))

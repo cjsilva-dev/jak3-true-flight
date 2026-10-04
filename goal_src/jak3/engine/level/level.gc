@@ -481,6 +481,35 @@
   (none)
   )
 
+;; TRUE FLIGHT MOD: forget a wanted level that can't be loaded, together with every wanted level that
+;; names it as its master (the game stops with an assert when a sub-level loads without its master:
+;; wascitya without waswide, next to a loaded desert, crashed the game on 2026-10-03). The flight
+;; streamer hears about it through *fs-stream-failed*.
+(defun fs-drop-want ((name symbol))
+  (set! *fs-stream-failed* name)
+  (set! *fs-stream-failed-frame* (-> *display* real-clock frame-counter))
+  (let ((names (new 'stack-no-clear 'array 'symbol 10))
+        (n 0))
+    (dotimes (i 10)
+      (set! (-> names i) #f)
+      )
+    (dotimes (w 10)
+      (let ((nm (-> *load-state* want w name)))
+        (when (and nm (!= nm name) (< n 10))
+          (let ((info (lookup-level-info nm)))
+            (when (not (and info (= (-> info master-level) name)))
+              (set! (-> names n) nm)
+              (set! n (+ n 1))
+              )
+            )
+          )
+        )
+      )
+    (want-levels *load-state* names)
+    )
+  (none)
+  )
+
 (defmethod level-get-for-use ((this level-group) (arg0 symbol) (arg1 symbol))
   "Request a level by name in the given state.
    Will return quickly (non-blocking) and might not be able to get a level in the desired state,
@@ -527,8 +556,11 @@
                 )
               )
             (format 0 "ERROR: level ~A is loading before master-level ~A~%" arg0 s0-0)
-            (break!)
-            0
+            ;; TRUE FLIGHT MOD: the original stopped the game here (break!). Don't load the level:
+            ;; forget the want and hand back no level, like the no-free-slot case above.
+            (fs-drop-want arg0)
+            (set! s5-1 (the-as level #f))
+            (goto cfg-28)
             )
           )
         )
@@ -1645,23 +1677,7 @@
            ;; TRUE FLIGHT MOD: the original stopped the game here (break!). On PC a level that
            ;; doesn't fit just isn't loaded: forget the want, remember the failure for the
            ;; flight streamer, and leave this slot inactive.
-           (set! *fs-stream-failed* (-> this name))
-           (set! *fs-stream-failed-frame* (-> *display* real-clock frame-counter))
-           (let ((names (new 'stack-no-clear 'array 'symbol 10))
-                 (n 0))
-             (dotimes (i 10)
-               (set! (-> names i) #f)
-               )
-             (dotimes (w 10)
-               (let ((nm (-> *load-state* want w name)))
-                 (when (and nm (!= nm (-> this name)) (< n 10))
-                   (set! (-> names n) nm)
-                   (set! n (+ n 1))
-                   )
-                 )
-               )
-             (want-levels *load-state* names)
-             )
+           (fs-drop-want (-> this name))
            (return this)
            0
            )
@@ -2308,7 +2324,8 @@
                 (-> this name)
                 (-> v1-10 name)
                 )
-              (break!)
+              ;; TRUE FLIGHT MOD: the original stopped the game here (break!); carry on, the
+              ;; dependent level is on its way out too
               0
               )
             )
@@ -3447,7 +3464,8 @@
               (format 0 "Adding level ~A~%" (-> this target s4-1 name))
               (fs-lvl-log "add" (-> this target s4-1 name) #f #f)
               (let ((s3-1 (level-get-for-use *level* (-> this target s4-1 name) 'loaded)))
-                (when (and s5-1 (-> this target s4-1 display?))
+                ;; TRUE FLIGHT MOD: level-get-for-use can hand back no level now (see fs-drop-want)
+                (when (and s5-1 s3-1 (-> this target s4-1 display?))
                   (format 0 "Waiting for level to load~%")
                   (while (or (= (-> s3-1 status) 'loading) (= (-> s3-1 status) 'loading-bt) (= (-> s3-1 status) 'login))
                     (load-continue s3-1)
