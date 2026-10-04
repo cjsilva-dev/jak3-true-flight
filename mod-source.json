@@ -5,7 +5,7 @@
   "mods": {
     "dark-flight": {
       "displayName": "Dark Flight",
-      "description": "Dark Jak grows wings and flies: flap, glide, turbo and a superhero-landing Dark Bomb. Two sets of wings: Metal Head (Metal Kor's) or Dark Angel (the Haven Forest pegasus), each with its own sounds. R3 switches them.",
+      "description": "Dark Jak grows wings and flies: flap, glide, turbo, a lightning dash and a Dark Bomb landing. Two wing sets, Metal Head (Metal Kor's) or Dark Angel, switched with R3. Works as Giant Dark Jak too.",
       "authors": [
         "cjsilva-dev"
       ],
@@ -71,7 +71,7 @@
     },
     "true-flight": {
       "displayName": "True Flight",
-      "description": "Light Jak really flies: stacking flaps, a momentum glide, a turbo and a superhero landing that sets off a Dark Bomb blast, with flight tuned for Haven City.",
+      "description": "Light Jak really flies: stacking flaps, a momentum glide, turbo, a dash and a superhero landing. Dark Jak flies too, with his own ragged wings, a bomb dash and the real Dark Bomb landing.",
       "authors": [
         "cjsilva-dev"
       ],
