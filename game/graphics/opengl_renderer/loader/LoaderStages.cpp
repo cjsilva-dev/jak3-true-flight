@@ -4,7 +4,12 @@
 
 #include "common/global_profiler/GlobalProfiler.h"
 
-constexpr float LOAD_BUDGET = 4.5f;
+// Per-frame budgets for streaming a level's meshes and textures to the GPU. The original values
+// (4.5 ms, 1 MB of textures and 2 MB of geometry per frame, then a 10-frame stall) paced a level
+// load over ~80 frames; a PC drains a level in a handful of frames without dropping any.
+constexpr float LOAD_BUDGET = 10.f;
+constexpr u32 GEO_BYTES_PER_FRAME_KB = 32768;  // was 2048
+constexpr int STALL_FRAMES = 2;                 // was 10
 
 /*!
  * Upload a texture to the GPU, and give it to the pool.
@@ -40,7 +45,7 @@ class TextureLoaderStage : public LoaderStage {
  public:
   TextureLoaderStage() : LoaderStage("texture") {}
   bool run(Timer& timer, LoaderInput& data) override {
-    constexpr int MAX_TEX_BYTES_PER_FRAME = 1024 * 1024;
+    constexpr int MAX_TEX_BYTES_PER_FRAME = 16 * 1024 * 1024;  // was 1 MB
 
     int bytes_this_run = 0;
     int tex_this_run = 0;
@@ -51,7 +56,7 @@ class TextureLoaderStage : public LoaderStage {
         data.lev_data->textures.push_back(add_texture(*data.tex_pool, tex, false));
         bytes_this_run += tex.w * tex.h * 4;
         tex_this_run++;
-        if (tex_this_run > 20) {
+        if (tex_this_run > 400) {  // was 20
           break;
         }
         if (bytes_this_run > MAX_TEX_BYTES_PER_FRAME || timer.getMs() > LOAD_BUDGET) {
@@ -151,7 +156,7 @@ class TfragLoadStage : public LoaderStage {
         return false;
       }
 
-      if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > 2048) {
+      if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > GEO_BYTES_PER_FRAME_KB) {
         return false;
       }
     }
@@ -242,7 +247,7 @@ class ShrubLoadStage : public LoaderStage {
         }
       }
 
-      if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 128) > 2048) {
+      if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > GEO_BYTES_PER_FRAME_KB) {
         return false;
       }
     }
@@ -358,7 +363,7 @@ class TieLoadStage : public LoaderStage {
           }
         }
 
-        if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > 2048) {
+        if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > GEO_BYTES_PER_FRAME_KB) {
           return false;
         }
       }
@@ -467,7 +472,7 @@ class TieLoadStage : public LoaderStage {
           }
         }
 
-        if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > 2048) {
+        if (timer.getMs() > LOAD_BUDGET || (uploaded_bytes / 1024) > GEO_BYTES_PER_FRAME_KB) {
           return false;
         }
       }
@@ -548,7 +553,7 @@ class StallLoaderStage : public LoaderStage {
   StallLoaderStage() : LoaderStage("stall") {}
   bool run(Timer&, LoaderInput& /*data*/) override {
     m_count++;
-    if (m_count > 10) {
+    if (m_count > STALL_FRAMES) {
       return true;
     }
     return false;

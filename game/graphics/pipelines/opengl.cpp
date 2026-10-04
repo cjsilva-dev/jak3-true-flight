@@ -47,8 +47,10 @@
 
 constexpr bool run_dma_copy = false;
 
+// How many levels' fr3 data the renderer keeps resident. Jak 2 gets extra slots so Haven's
+// districts stay on the GPU once visited instead of being re-uploaded on every crossing.
 constexpr PerGameVersion<int> fr3_level_count(jak1::LEVEL_TOTAL,
-                                              jak2::LEVEL_TOTAL,
+                                              jak2::LEVEL_TOTAL + 3,
                                               jak3::LEVEL_TOTAL,
                                               jakx::LEVEL_TOTAL);
 

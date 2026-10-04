@@ -1,0 +1,810 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: flight-stream.gc
+;; FLIGHT STREAMER -- shared between Dark Flight (Jak 2) and True Flight (Jak 3).
+;; This file is byte-identical in both repos. What differs per game lives in flight-stream-h.gc (slot
+;; count, memory-mode names, master levels, the mission guard) and flight-map.gc (the ground map,
+;; generated from a scan of the running game). The engine-side pieces (level-h.gc, level.gc,
+;; load-state.gc, cam-update.gc, logic-target.gc) use the same fs- names.
+;;
+;; The game swaps levels with trigger regions at gates and doorways; flying over the walls never
+;; crosses them, so at speed you reach a level before it's loaded. flight-map.gc records, for every
+;; managed area, which level owns the ground of each 16 m cell and how high that ground is. While
+;; flying, the level under Jak and the level under the point he reaches in a few seconds are looked
+;; up there and kept loaded. The first versions guessed both from the nearest checkpoints; ten rules
+;; of guessing still unloaded the ground under Jak three times, so nothing is guessed any more.
+;;
+;; Rules:
+;;  1. "here" = the level whose ground is under Jak (fs-map-at); "next" = the first other level on
+;;     the path ahead, walked cell by cell over the look-ahead distance. Two areas are all the level
+;;     heap holds, so the order matters: along a seam between two districts with a third ahead, the
+;;     two under the path stay and the third is only warmed up in the renderer until the path
+;;     reaches it (Corey's fall at the indb/sluma/markb corner was this, 2026-10-02).
+;;  2. Wanted set = what is wanted now and isn't a mapped level (the area's wide level, alias and
+;;     'special levels, an interior Jak is still inside of), then here, then next. With nothing new
+;;     ahead the last "next" stays (no reload with every wobble near a border); with no next at
+;;     all, the level just left while it's still loaded. A sub-level's master goes in first (the
+;;     game asserts otherwise). Other mapped levels are dropped: that frees the room for "next".
+;;  3. A new "next" further than *fs-stream-near* cells off must hold *fs-stream-settle* decisions
+;;     (the far end of the path sweeps across borders as Jak turns). After a failed load nothing new is tried for 10 s and the pending next is dropped.
+;;  4. Where the map has no ground under Jak and none ahead, nothing is decided: unmapped areas are
+;;     left to the game's own triggers (the desert streams itself, interiors can't be out-flown).
+;;     The map only answers within the area Jak is in (the group of a level that is loaded now):
+;;     worlds overlap in coordinates, and west of Spargus it once answered "Haven's slums".
+;;  5. A level that doesn't fit, or whose master isn't loaded, no longer stops the game (level.gc):
+;;     the want is dropped with everything that depends on it, and remembered, so a wrong pick
+;;     costs a late load, never a crash (mountain+forest, 2026-09-30; wascitya next to a loaded
+;;     desert, 2026-10-03).
+;;  9. Never fight the game for the level list. While an area that streams itself is loaded (the
+;;     Jak 3 desert: its alias level picks sub-zones by position every frame), nothing is decided
+;;     (adapter: fs-self-streamed-area?); and if the wants still get changed back more than a few
+;;     times a second, the streamer backs off for 5 s (the garage between Spargus and the desert,
+;;     2026-10-03: a frame-by-frame tug of war, then the crash of rule 5).
+;; 10. Flight wall: where flight leads to ground the mod can't load, Jak stops (see FLIGHT WALL).
+;;     Switched on per area in the adapter; first for Spargus, whose only neighbour is the desert.
+;;  6. The game's "current level" follows the map too (want-vis-level): its own test goes by level
+;;     boxes, which overlap and which flight enters from sides nobody walks through.
+;;  7. Anti-abyss net: when the game is about to kill Jak for falling out of the world right after
+;;     flying, he goes back above the last spot where a ray straight down hit ground (a spot saved
+;;     in the same unbroken flight never goes stale: a long glide out over nothing ends back at
+;;     the edge he left, not in a death), and the
+;;     streamer's state is dumped to the log (a fixed -25 m line sat below Haven's own -15 m death
+;;     line and never fired in a real fall, 2026-10-03).
+;;  8. With solid ground right below a flying Jak, the game's death line doesn't apply (the arena's
+;;     +10 m lava line over Spargus's 8 m street killed a slam off the arena stairs, 2026-10-03).
+
+;; ---- LEVEL STREAMING WHILE FLYING ----
+(define *fs-stream-timer* 0)               ;; frames since the last decision
+(define *fs-stream-ahead* 3.5)             ;; seconds of flight the next area is picked ahead...
+(define *fs-stream-ahead-min* (meters 100)) ;; ...at least this far, at most *fs-stream-ahead-max*
+(define *fs-stream-ahead-max* (meters 250)) ;; (the path is walked cell by cell, so no neighbour is skipped)
+(define *fs-stream-settle* 3)              ;; decisions in a row a far "next" needs before it counts...
+(define *fs-stream-near* 3)                ;; ...one whose ground starts within this many cells counts at once
+(define *fs-stream-every* 6)               ;; frames between decisions
+(define *fs-map-below* (meters 15))        ;; Jak may be this far under a cell's ground and still be "over" it
+(define *fs-map-ahead-below* (meters 60))  ;; ...and the ground ahead may be this much higher than Jak
+(define *fs-vis-from-map?* #t)             ;; rule 6
+(define *fs-air-frame* 0)                  ;; last frame the flight code ran (the want hook checks it)
+(define *fs-stream-now* #f)                ;; the level Jak is over
+(define *fs-stream-next* #f)               ;; the level he's heading for
+(define *fs-stream-cand* #f)               ;; the "next" being considered, and for how long
+(define *fs-stream-cand-n* 0)
+(define *fs-stream-last-frame* 0)          ;; when the last decision ran
+(define *fs-stream-prev* #f)               ;; the level Jak just left (kept until a new "next" shows up)
+(define *fs-stream-fight-frame* 0)         ;; rule 9: start of the current one-second window...
+(define *fs-stream-fight-n* 0)             ;; ...and how often the wants were re-issued in it
+(define *fs-stream-fight-max* 4)
+(define *fs-stream-backoff-until* 0)       ;; no decisions before this frame
+
+(defun fs-mapped? ((name symbol))
+  "Is this level one of the areas in the ground map?"
+  (let ((yes #f))
+    (dotimes (i (-> *fs-map-names* length))
+      (if (= (-> *fs-map-names* i) name)
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-level-present? ((name symbol))
+  "Is this level wanted or loaded right now?"
+  (let ((yes #f))
+    (dotimes (i FS-SLOTS)
+      (if (= (-> *load-state* want i name) name)
+          (set! yes #t)
+          )
+      )
+    (dotimes (i LEVEL_MAX)
+      (if (and (= (-> *level* level i name) name) (!= (-> *level* level i status) 'inactive))
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(define *fs-map-group* -1) ;; the area Jak is in (set at the start of every decision)
+
+(defun fs-map-find-group ()
+  "The area Jak is in: the one a mapped level that is wanted (else still loaded) belongs to; -1
+   when there is none (the map then answers nothing and the game is left alone). Worlds overlap in
+   coordinates (Jak 3's Haven lies under the desert west of Spargus), so position alone can't say."
+  (let ((g -1))
+    (dotimes (i FS-SLOTS)
+      (let ((nm (-> *load-state* want i name)))
+        (when (and nm (< g 0))
+          (dotimes (k (-> *fs-map-names* length))
+            (if (= (-> *fs-map-names* k) nm)
+                (set! g (the-as int (-> *fs-map-groups* k)))
+                )
+            )
+          )
+        )
+      )
+    (when (< g 0)
+      (dotimes (k (-> *fs-map-names* length))
+        (if (and (< g 0) (fs-level-present? (-> *fs-map-names* k)))
+            (set! g (the-as int (-> *fs-map-groups* k)))
+            )
+        )
+      )
+    g
+    )
+  )
+
+(defun fs-map-at ((pos vector) (below float))
+  "The mapped level of Jak's area (*fs-map-group*) whose ground is under pos, or #f. Where two
+   levels have ground in the cell, the higher one. Ground more than BELOW above pos doesn't count:
+   under a city, in a sewer the map doesn't know, Jak is not over the district above him."
+  (let ((cx (the int (floor (/ (-> pos x) FS-MAP-CELL))))
+        (cz (the int (floor (/ (-> pos z) FS-MAP-CELL))))
+        (top (+ 1 (the int (/ (+ (-> pos y) below (meters 130)) (meters 2)))))
+        (best (the-as symbol #f))
+        (bestb 0)
+        )
+    (dotimes (i (-> *fs-map-names* length))
+      (let* ((d (* i 5))
+             (ix (- cx (-> *fs-map-dims* d)))
+             (iz (- cz (-> *fs-map-dims* (+ d 1))))
+             (nx (-> *fs-map-dims* (+ d 2)))
+             )
+        (when (and (= (the-as int (-> *fs-map-groups* i)) *fs-map-group*)
+                   (>= ix 0) (>= iz 0) (< ix nx) (< iz (-> *fs-map-dims* (+ d 3))))
+          (let ((b (the-as int (-> *fs-map-cells* (+ (-> *fs-map-dims* (+ d 4)) (* iz nx) ix)))))
+            (when (and (< 0 b) (<= b top) (< bestb b))
+              (set! best (-> *fs-map-names* i))
+              (set! bestb b)
+              )
+            )
+          )
+        )
+      )
+    best
+    )
+  )
+
+(defun fs-level-outside? ((name symbol) (pos vector))
+  "Is pos outside loaded level NAME's main geometry sphere (so it's safe to unload it)?
+   (The city's bsp bsphere may be empty; the level's first drawable tree's sphere is real
+   geometry.) A level that isn't loaded counts as outside."
+  (let ((out #t))
+    (dotimes (i LEVEL_MAX)
+      (let ((lv (-> *level* level i)))
+        (when (and (= (-> lv name) name)
+                   (or (= (-> lv status) 'active) (= (-> lv status) 'loaded) (= (-> lv status) 'alive))
+                   (-> lv bsp)
+                   (nonzero? (-> lv bsp drawable-trees))
+                   (< 0 (-> lv bsp drawable-trees length))
+                   )
+          (let* ((c (-> lv bsp drawable-trees trees 0 bsphere))
+                 (dx (- (-> pos x) (-> c x)))
+                 (dz (- (-> pos z) (-> c z)))
+                 )
+            (if (< (sqrtf (+ (* dx dx) (* dz dz))) (-> c w))
+                (set! out #f)
+                )
+            )
+          )
+        )
+      )
+    out
+    )
+  )
+
+(defun fs-borrow-level? ((name symbol))
+  "A borrow-mode level (the game re-adds these itself from its hosts)."
+  (let ((info (lookup-level-info name)))
+    (if (and info (fs-borrow-mode? info)) #t #f)
+    )
+  )
+
+(defun fs-real-level? ((name symbol))
+  "Does this level take a real bank of the level heap (not a borrow or alias level)?"
+  (let ((info (lookup-level-info name)))
+    (if (and info (not (fs-alias-mode? info)) (not (fs-borrow-mode? info))) #t #f)
+    )
+  )
+
+(defun fs-alias-level? ((name symbol))
+  "An alias level (Jak 3's ctywide-ff...): a name the game expands into real levels itself."
+  (let ((info (lookup-level-info name)))
+    (if (and info (fs-alias-mode? info)) #t #f)
+    )
+  )
+
+(defun fs-stream-add ((keep (pointer symbol)) (disp (pointer symbol)) (n int) (name symbol) (d symbol))
+  "Append name (with its display flag) to the keep list unless it's there or just failed to
+   load. A sub-level's master level goes in ahead of it (the game asserts otherwise)."
+  (when (and name
+             (< n FS-SLOTS)
+             ;; not a level that just failed to load, nor one whose master just did
+             (not (and *fs-stream-failed*
+                       (< (- (-> *display* real-clock frame-counter) *fs-stream-failed-frame*) (seconds 10))
+                       (or (= name *fs-stream-failed*)
+                           (let ((info (lookup-level-info name)))
+                             (and info (= (fs-master-level info) *fs-stream-failed*)))
+                           )
+                       ))
+             )
+    (let ((dup #f))
+      (dotimes (i n)
+        (if (= (-> keep i) name)
+            (set! dup #t)
+            )
+        )
+      (when (not dup)
+        (let ((info (lookup-level-info name)))
+          (when (and info (fs-master-level info) (!= (fs-master-level info) name))
+            (let ((have #f))
+              (dotimes (i n)
+                (if (= (-> keep i) (fs-master-level info))
+                    (set! have #t)
+                    )
+                )
+              (when (and (not have) (< n (- FS-SLOTS 1)))
+                (set! (-> keep n) (fs-master-level info))
+                (set! (-> disp n) 'display)
+                (set! n (+ n 1))
+                )
+              )
+            )
+          )
+        (when (< n FS-SLOTS)
+          (set! (-> keep n) name)
+          (set! (-> disp n) d)
+          (set! n (+ n 1))
+          )
+        )
+      )
+    )
+  n
+  )
+
+(defun fs-stream-decide ()
+  "Pick the level set to keep loaded and re-issue the wants if it differs from what's wanted now."
+  (when (and *target*
+             (not (fs-city-mission?))
+             (not (fs-self-streamed-area?))
+             (< *fs-stream-backoff-until* (-> *display* real-clock frame-counter))
+             )
+    (set! *fs-map-group* (fs-map-find-group))
+    (let* ((pos (-> *target* control trans))
+           (v (-> *target* control transv))
+           (sp (vector-xz-length v))
+           (ahead (new-stack-vector0))
+           (frame (-> *display* real-clock frame-counter))
+           (here (fs-map-at pos *fs-map-below*))
+           (next (the-as symbol #f))
+           (after (the-as symbol #f)) ;; the level after next along the path
+           (near? #f)                 ;; next's ground starts within *fs-stream-near* cells
+           (failed? (and *fs-stream-failed* (< (- frame *fs-stream-failed-frame*) (seconds 3))))
+           )
+      ;; after a teleport or a long walk the remembered levels are stale: forget them
+      (when (< (seconds 2) (- frame *fs-stream-last-frame*))
+        (set! *fs-stream-cand* #f)
+        (set! *fs-stream-next* #f)
+        (set! *fs-stream-prev* #f)
+        (set! *fs-stream-now* #f)
+        )
+      ;; over a gap in the map (open water, a seam between two grids): still the level just flown over
+      (if (and (not here) *fs-stream-now* (fs-level-present? *fs-stream-now*))
+          (set! here *fs-stream-now*)
+          )
+      ;; the first two other levels along the path ahead, cell by cell: "next" is the next ground
+      ;; Jak will be over, the one after it is only warmed up in the renderer (two areas are all
+      ;; the level heap holds). After a failed load, stick to what is here for a while.
+      (when (and (< (meters 1) sp) (not failed?))
+        (let ((steps (the int (/ (fmin *fs-stream-ahead-max* (fmax *fs-stream-ahead-min* (* sp *fs-stream-ahead*))) FS-MAP-CELL)))
+              (dx (* (/ (-> v x) sp) FS-MAP-CELL))
+              (dz (* (/ (-> v z) sp) FS-MAP-CELL))
+              )
+          (vector-copy! ahead pos)
+          (dotimes (i steps)
+            (set! (-> ahead x) (+ (-> ahead x) dx))
+            (set! (-> ahead z) (+ (-> ahead z) dz))
+            (let ((lv (fs-map-at ahead *fs-map-ahead-below*)))
+              (when (and lv (!= lv here))
+                (cond
+                  ((not next)
+                   (set! next lv)
+                   (set! near? (< i *fs-stream-near*))
+                   )
+                  ((and (!= lv next) (not after))
+                   (set! after lv)
+                   )
+                  )
+                )
+              )
+            )
+          )
+        )
+      ;; nothing new ahead (hovering, turning, slow): the level picked last stays while it's here,
+      ;; instead of being dropped and loaded again with every wobble near a border
+      (if (and (not next) (not failed?) *fs-stream-next* (!= *fs-stream-next* here) (fs-level-present? *fs-stream-next*))
+          (set! next *fs-stream-next*)
+          )
+      (when failed?
+        (set! *fs-stream-next* #f)
+        (set! *fs-stream-cand* #f)
+        )
+      (when (or here next)
+        (when (and here (!= here *fs-stream-now*))
+          (set! *fs-stream-prev* *fs-stream-now*)
+          )
+        (set! *fs-stream-last-frame* frame)
+        ;; a new "next" has to hold for a few decisions before it replaces the old one (the far end
+        ;; of the path sweeps across borders as Jak turns), unless its ground is only a few cells off
+        (cond
+          ((= next *fs-stream-cand*)
+           (set! *fs-stream-cand-n* (+ *fs-stream-cand-n* 1))
+           )
+          (else
+            (set! *fs-stream-cand* next)
+            (set! *fs-stream-cand-n* 1)
+            )
+          )
+        (cond
+          ((and (!= next *fs-stream-next*) (not near?) (< *fs-stream-cand-n* *fs-stream-settle*) (!= *fs-stream-next* here))
+           ;; not settled yet: keep the previous next, warm the candidate up meanwhile
+           (set! after next)
+           (set! next *fs-stream-next*)
+           )
+          (else
+            (set! *fs-stream-next* next)
+            )
+          )
+        (set! *fs-prewarm-level* (if (and after (not (fs-level-present? after))) after (the-as symbol #f)))
+        (set! *fs-stream-now* here)
+        (let ((keep (new 'stack-no-clear 'array 'symbol FS-SLOTS))
+              (disp (new 'stack-no-clear 'array 'symbol FS-SLOTS))
+              (n 0)
+              )
+          (dotimes (i FS-SLOTS)
+            (set! (-> keep i) #f)
+            (set! (-> disp i) #f)
+            )
+          ;; what is wanted now and isn't ours to manage, in the game's own order: wide, alias and
+          ;; 'special levels always; any other real level only while Jak is inside it (an interior
+          ;; is let go once he has flown out of it: its room is needed for the level ahead, and the
+          ;; door's own trigger asks for it again on landing)
+          (dotimes (i FS-SLOTS)
+            (let ((nm (-> *load-state* want i name)))
+              (if (and nm
+                       (not (fs-mapped? nm))
+                       (or (= (-> *load-state* want i display?) 'special)
+                           (fs-wide-level? nm)
+                           (fs-alias-level? nm)
+                           (and (fs-real-level? nm) (not (fs-level-outside? nm pos)))
+                           )
+                       )
+                  (set! n (fs-stream-add keep disp n nm (-> *load-state* want i display?)))
+                  )
+              )
+            )
+          (set! n (fs-stream-add keep disp n here 'display))
+          (set! n (fs-stream-add keep disp n next 'display))
+          (when (not next)
+            ;; nothing ahead: the level just left stays, else one mapped level that is already
+            ;; here (no reason to unload it before its room is needed)
+            (cond
+              ((and *fs-stream-prev* (!= *fs-stream-prev* here) (fs-mapped? *fs-stream-prev*) (fs-level-present? *fs-stream-prev*))
+               (set! n (fs-stream-add keep disp n *fs-stream-prev* 'display))
+               )
+              (else
+                (let ((spare (the-as symbol #f)))
+                  (dotimes (i FS-SLOTS)
+                    (let ((nm (-> *load-state* want i name)))
+                      (if (and nm (not spare) (!= nm here) (fs-mapped? nm))
+                          (set! spare nm)
+                          )
+                      )
+                    )
+                  (set! n (fs-stream-add keep disp n spare 'display))
+                  )
+                )
+              )
+            )
+          ;; only touch the wants when they'd change (ignoring borrow levels, which the game adds),
+          ;; and never without the level under Jak in the list
+          (let ((same #t)
+                (have-here (not here)))
+            (dotimes (i n)
+              (if (= (-> keep i) here)
+                  (set! have-here #t)
+                  )
+              )
+            (dotimes (i n)
+              (let ((found #f))
+                (dotimes (j FS-SLOTS)
+                  (if (= (-> *load-state* want j name) (-> keep i))
+                      (set! found #t)
+                      )
+                  )
+                (if (not found)
+                    (set! same #f)
+                    )
+                )
+              )
+            (dotimes (j FS-SLOTS)
+              (let ((nm (-> *load-state* want j name)))
+                (when (and nm (not (fs-borrow-level? nm)))
+                  (let ((found #f))
+                    (dotimes (i n)
+                      (if (= (-> keep i) nm)
+                          (set! found #t)
+                          )
+                      )
+                    (if (not found)
+                        (set! same #f)
+                        )
+                    )
+                  )
+                )
+              )
+            (when (and (not same) have-here)
+              ;; rule 9: something else keeps changing the level set back (more than
+              ;; *fs-stream-fight-max* re-issues within a second): stop for a while
+              (when (< (seconds 1) (- frame *fs-stream-fight-frame*))
+                (set! *fs-stream-fight-frame* frame)
+                (set! *fs-stream-fight-n* 0)
+                )
+              (set! *fs-stream-fight-n* (+ *fs-stream-fight-n* 1))
+              (when (< *fs-stream-fight-max* *fs-stream-fight-n*)
+                (set! *fs-stream-backoff-until* (+ frame (seconds 5)))
+                (format 0 "FS: the level set keeps being changed back, hands off for 5 s (~A ~A)~%" here next)
+                )
+              (let ((was *fs-in-want-hook?*))
+                (set! *fs-in-want-hook?* #t) ;; our own want-levels must not re-enter the hook
+                (want-levels *load-state* (the-as (pointer symbol) keep))
+                (set! *fs-in-want-hook?* was)
+                )
+              (dotimes (i n)
+                (if (-> disp i)
+                    (want-display-level *load-state* (-> keep i) (-> disp i))
+                    )
+                )
+              ;; always logged (one line per change of the level set): with the FSDUMP lines of
+              ;; the abyss net, the history a fall through the world is diagnosed from
+              (format 0 "LVL ~D ~D stream ~A ~A ~,,0M ~,,0M~%" frame
+                      (/ (the int (get-cpu-clock)) 300000) here next (-> pos x) (-> pos z))
+              )
+            )
+          )
+        ;; rule 6: the game's current level is the one whose ground is under Jak
+        (when (and *fs-vis-from-map?* here (!= (-> *load-state* vis-nick) here) (fs-mapped? here))
+          (dotimes (i LEVEL_MAX)
+            (let ((lv (-> *level* level i)))
+              (if (and (= (-> lv name) here) (= (-> lv status) 'active))
+                  (want-vis-level *load-state* here)
+                  )
+              )
+            )
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defun fs-stream-hook ()
+  "Runs after every want-levels call (see level-h.gc): while flying, re-decide."
+  (if (< (- (-> *display* real-clock frame-counter) *fs-air-frame*) 60)
+      (fs-stream-decide)
+      )
+  (none)
+  )
+(set! *fs-want-levels-hook* fs-stream-hook)
+
+;; ---- ANTI-ABYSS NET (rules 7 and 8) ----
+;; If, despite everything, the ground isn't there (a level late or missing), Jak falls through the
+;; world and the game kills him at the level's bottom height ('endlessfall, logic-target.gc: -15 m
+;; in Haven, -150 m in Spargus). That check asks *fs-endlessfall-hook* (level-h.gc) first: when Jak
+;; was flying moments ago he is put back above the last spot where a ray cast straight down hit
+;; solid ground. (The first net waited for a fixed -25 m: below Haven's death line, so it never
+;; fired there in a real fall, and inside the playable depth of the sewers and tombs.)
+(define *fs-safe-pos* (new 'static 'vector)) ;; where Jak last flew over solid ground
+(define *fs-safe-ground-y* 0.0)              ;; the height of that ground
+(define *fs-safe-frame* 0)                   ;; when that was (0 = never)
+(define *fs-safe-probe-frame* 0)             ;; when the ray was last cast
+(define *fs-safe-probe* (meters 150))        ;; how far down the ray looks
+(define *fs-safe-max-age* (seconds 20))      ;; an older spot isn't trusted (teleports, long drops)...
+(define *fs-air-since* 0)                    ;; ...unless it was saved in this same unbroken flight (began here)
+(define *fs-safe-lift* (meters 10))          ;; Jak is put back at least this far above the ground
+(define *fs-abyss-saves* 0)
+(define *fs-dump-frame* 0)
+
+(defun fs-dump ((why string))
+  "The black box: the streamer's view of the world, into the game log (at most every 5 s)."
+  (let ((now (-> *display* real-clock frame-counter)))
+    (when (and *target* (< (seconds 5) (- now *fs-dump-frame*)))
+      (set! *fs-dump-frame* now)
+      (let ((p (-> *target* control trans)))
+        (format 0 "FSDUMP ~S frame ~D pos ~,,0M ~,,0M ~,,0M speed ~,,0M~%" why now (-> p x) (-> p y) (-> p z)
+                (vector-xz-length (-> *target* control transv)))
+        )
+      (format 0 "FSDUMP now ~A next ~A prev ~A failed ~A current-level ~A~%" *fs-stream-now* *fs-stream-next*
+              *fs-stream-prev* *fs-stream-failed*
+              (if (-> *target* current-level) (-> *target* current-level name) #f))
+      (format 0 "FSDUMP safe ~,,0M ~,,0M ~,,0M ground ~,,0M age ~D air-age ~D~%" (-> *fs-safe-pos* x)
+              (-> *fs-safe-pos* y) (-> *fs-safe-pos* z) *fs-safe-ground-y* (- now *fs-safe-frame*)
+              (- now *fs-air-frame*))
+      (dotimes (i FS-SLOTS)
+        (if (-> *load-state* want i name)
+            (format 0 "FSDUMP want ~A ~A~%" (-> *load-state* want i name) (-> *load-state* want i display?))
+            )
+        )
+      (dotimes (i LEVEL_MAX)
+        (if (!= (-> *level* level i status) 'inactive)
+            (format 0 "FSDUMP level ~A ~A~%" (-> *level* level i name) (-> *level* level i status))
+            )
+        )
+      )
+    )
+  (none)
+  )
+
+(define *fs-probe-y* 0.0) ;; where the last ray hit
+(defun fs-ground-below? ((pos vector))
+  "Cast a ray straight down from pos: is there solid ground no further down than *fs-safe-probe* (its height
+   goes to *fs-probe-y*)?"
+  (let ((q (new 'stack-no-clear 'collide-query)))
+    (vector-copy! (-> q start-pos) pos)
+    (+! (-> q start-pos y) (meters 1))
+    (set-vector! (-> q move-dist) 0.0 (- *fs-safe-probe*) 0.0 1.0)
+    (set! (-> q radius) 40.96)
+    (set! (-> q collide-with) (collide-spec backgnd))
+    (set! (-> q ignore-process0) #f)
+    (set! (-> q ignore-process1) #f)
+    (set! (-> q ignore-pat) (new 'static 'pat-surface :noentity #x1 :nojak #x1 :probe #x1 :noendlessfall #x1))
+    (set! (-> q action-mask) (collide-action solid))
+    (cond
+      ((>= (fill-and-probe-using-line-sphere *collide-cache* q) 0.0)
+       (set! *fs-probe-y* (-> q best-other-tri intersect y))
+       #t
+       )
+      (else
+        #f
+        )
+      )
+    )
+  )
+
+(defbehavior fs-abyss-net target ()
+  "Twice a second while flying: remember this spot if there is solid ground straight below."
+  (let ((now (-> *display* real-clock frame-counter)))
+    (when (< (seconds 0.5) (- now *fs-safe-probe-frame*))
+      (set! *fs-safe-probe-frame* now)
+      (when (fs-ground-below? (-> self control trans))
+        (vector-copy! *fs-safe-pos* (-> self control trans))
+        (set! *fs-safe-ground-y* *fs-probe-y*)
+        (set! *fs-safe-frame* now)
+        )
+      )
+    )
+  (none)
+  )
+
+(define *fs-veto-frame* 0)
+(defun fs-endlessfall-rescue ()
+  "The game is about to kill Jak for falling out of the world (logic-target.gc). If he was flying
+   moments ago: with solid ground right below, it isn't a fall out of the world at all, he just
+   lands (#t: no death). Flight crosses level volumes from sides nobody walks through, so the
+   game's current level can be a neighbour with a higher death line: the arena's lava line is at
+   +10 m, Spargus's street beside its stairs at 8 m, and a slam off those stairs killed Jak
+   (2026-10-03). With nothing below and a fresh spot over solid ground, put him back there,
+   hovering, and say so (#t). Otherwise #f, and the game carries on as it always did."
+  (let ((now (-> *display* real-clock frame-counter))
+        (saved #f)
+        )
+    (when (and *target* (< (- now *fs-air-frame*) (seconds 10)))
+      (cond
+        ((fs-ground-below? (-> *target* control trans))
+         (when (< (seconds 5) (- now *fs-veto-frame*))
+           (set! *fs-veto-frame* now)
+           (format 0 "FS: ground below Jak, the death line of ~A doesn't apply (~,,0M ~,,0M ~,,0M)~%"
+                   (if (-> *target* current-level) (-> *target* current-level name) #f)
+                   (-> *target* control trans x) (-> *target* control trans y) (-> *target* control trans z))
+           )
+         (set! saved #t)
+         )
+        ((and (< 0 *fs-safe-frame*)
+              (or (< (- now *fs-safe-frame*) *fs-safe-max-age*)
+                  ;; saved during this same unbroken flight: still the place he flew out from,
+                  ;; however long the glide over nothing was
+                  (<= *fs-air-since* *fs-safe-frame*)))
+         (fs-dump "ABYSS")
+         (let ((ctrl (-> *target* control)))
+           (set! (-> ctrl trans quad) (-> *fs-safe-pos* quad))
+           (set! (-> ctrl trans y) (fmax (-> *fs-safe-pos* y) (+ *fs-safe-ground-y* *fs-safe-lift*)))
+           (vector-reset! (-> ctrl transv))
+           )
+         (set! *fs-abyss-saves* (+ *fs-abyss-saves* 1))
+         (format 0 "ABYSS: put Jak back at ~,,0M ~,,0M ~,,0M (~D)~%" (-> *fs-safe-pos* x) (-> *fs-safe-pos* y)
+                 (-> *fs-safe-pos* z) *fs-abyss-saves*)
+         (set! saved #t)
+         )
+        (else
+          (fs-dump "ABYSS-DEATH")
+          )
+        )
+      )
+    saved
+    )
+  )
+(set! *fs-endlessfall-hook* fs-endlessfall-rescue)
+
+;; ---- FLIGHT WALL (rule 10) ----
+;; Where flight leads to ground the mod can't load, Jak stops instead of falling: at the edge of an
+;; area the wall is switched on for (adapter: *fs-wall-levels*; flight-map.gc holds each area's
+;; allowed cells), and, while the desert is loaded, at that area's ground whose level isn't loaded.
+;; Only leaving is blocked: taking off outside, or coming back in, is never stopped. It works on
+;; Jak's position (he is put back on the last allowed spot, sliding along the wall when one axis
+;; of the move is fine), so nothing the flight code does to his velocity later in the frame matters.
+(define *fs-wall?* #t)
+(define *fs-wall-pos* (new 'static 'vector)) ;; the last allowed spot
+(define *fs-wall-frame* 0)                   ;; when it was recorded (0 = no wall until he's inside again)
+(define *fs-wall-log-frame* 0)
+(define *fs-wall-stops* 0)
+
+(defun fs-wall-group ()
+  "The area the wall is switched on for, or -1."
+  (let ((g -1)
+        (l *fs-wall-levels*)
+        )
+    (while (not (null? l))
+      (dotimes (k (-> *fs-map-names* length))
+        (if (= (-> *fs-map-names* k) (car l))
+            (set! g (the-as int (-> *fs-map-groups* k)))
+            )
+        )
+      (set! l (cdr l))
+      )
+    g
+    )
+  )
+
+(defun fs-area-inside? ((pos vector) (grp int))
+  "Is pos over the allowed cells of area GRP (ground, enclosed water, margin)?"
+  (let* ((d (* grp 5))
+         (ix (- (the int (floor (/ (-> pos x) FS-MAP-CELL))) (-> *fs-map-area-dims* d)))
+         (iz (- (the int (floor (/ (-> pos z) FS-MAP-CELL))) (-> *fs-map-area-dims* (+ d 1))))
+         (nx (-> *fs-map-area-dims* (+ d 2)))
+         )
+    (and (>= ix 0)
+         (>= iz 0)
+         (< ix nx)
+         (< iz (-> *fs-map-area-dims* (+ d 3)))
+         (nonzero? (-> *fs-map-area-cells* (+ (-> *fs-map-area-dims* (+ d 4)) (* iz nx) ix)))
+         )
+    )
+  )
+
+(defun fs-level-active? ((name symbol))
+  (let ((yes #f))
+    (dotimes (i LEVEL_MAX)
+      (if (and (= (-> *level* level i name) name) (= (-> *level* level i status) 'active))
+          (set! yes #t)
+          )
+      )
+    yes
+    )
+  )
+
+(defun fs-wall-allowed? ((pos vector))
+  "May a flying Jak be at pos?"
+  (let ((wg (fs-wall-group)))
+    (cond
+      ((< wg 0)
+       #t
+       )
+      ((fs-self-streamed-area?)
+       ;; the desert is loaded: anywhere, except over ground of the walled area whose level
+       ;; isn't loaded (the city behind its wall; the garage is the way in)
+       (set! *fs-map-group* wg)
+       (let ((lv (fs-map-at pos (meters 2000))))
+         (or (not lv) (fs-level-active? lv))
+         )
+       )
+      ((= (fs-map-find-group) wg)
+       (fs-area-inside? pos wg)
+       )
+      (else
+        #t
+        )
+      )
+    )
+  )
+
+(defbehavior fs-wall target ()
+  (when *fs-wall?*
+    (let* ((c (-> self control))
+           (pos (-> c trans))
+           (now (-> *display* real-clock frame-counter))
+           (dx (- (-> pos x) (-> *fs-wall-pos* x)))
+           (dz (- (-> pos z) (-> *fs-wall-pos* z)))
+           )
+      (cond
+        ((fs-wall-allowed? pos)
+         (vector-copy! *fs-wall-pos* pos)
+         (set! *fs-wall-frame* now)
+         )
+        ((and (< 0 *fs-wall-frame*)
+              (< (- now *fs-wall-frame*) (seconds 0.5))
+              (< (+ (* dx dx) (* dz dz)) (* (meters 30) (meters 30)))
+              )
+         ;; just crossed the wall. Keep the part of the move that is allowed (slide), else stay.
+         (let ((try (new 'stack-no-clear 'vector)))
+           (vector-copy! try pos)
+           (set! (-> try z) (-> *fs-wall-pos* z))
+           (cond
+             ((fs-wall-allowed? try)
+              (set! (-> pos z) (-> try z))
+              (set! (-> c transv z) 0.0)
+              )
+             (else
+               (vector-copy! try pos)
+               (set! (-> try x) (-> *fs-wall-pos* x))
+               (cond
+                 ((fs-wall-allowed? try)
+                  (set! (-> pos x) (-> try x))
+                  (set! (-> c transv x) 0.0)
+                  )
+                 (else
+                   (set! (-> pos x) (-> *fs-wall-pos* x))
+                   (set! (-> pos z) (-> *fs-wall-pos* z))
+                   (set! (-> c transv x) 0.0)
+                   (set! (-> c transv z) 0.0)
+                   )
+                 )
+               )
+             )
+           )
+         (vector-copy! *fs-wall-pos* pos)
+         (set! *fs-wall-frame* now)
+         (set! *fs-wall-stops* (+ *fs-wall-stops* 1))
+         (when (< (seconds 5) (- now *fs-wall-log-frame*))
+           (set! *fs-wall-log-frame* now)
+           (format 0 "FS: wall at ~,,0M ~,,0M ~,,0M~%" (-> pos x) (-> pos y) (-> pos z))
+           )
+         )
+        (else
+          ;; outside without having just crossed (took off out here, a teleport, a rescue): free
+          ;; until he is back inside
+          (set! *fs-wall-frame* 0)
+          )
+        )
+      )
+    )
+  (none)
+  )
+
+(defbehavior fs-tick target ()
+  "Per frame while flying, anywhere: the level decision every few frames, and every wanted
+   mapped level that is loaded but undrawn displayed (display is normally switched on by regions
+   at the gates, which flight skips: a loaded district sat undrawn behind a dark cliff)."
+  ;; a gap in the ticks means a new flight began (the abyss net trusts spots saved since then)
+  (if (< 30 (- (-> *display* real-clock frame-counter) *fs-air-frame*))
+      (set! *fs-air-since* (-> *display* real-clock frame-counter))
+      )
+  (set! *fs-air-frame* (-> *display* real-clock frame-counter))
+  (fs-abyss-net)
+  (fs-wall)
+  (set! *fs-fast-load-until* (+ (-> *display* real-clock frame-counter) 60)) ;; drain DGOs while flying
+  (set! *fs-vis-from-air?* #t) ;; new levels draw fully from the air (cam-update.gc)
+  (set! *fs-stream-timer* (+ *fs-stream-timer* 1))
+  (when (<= *fs-stream-every* *fs-stream-timer*)
+    (set! *fs-stream-timer* 0)
+    (fs-stream-decide)
+    (dotimes (i FS-SLOTS)
+      (let ((nm (-> *load-state* want i name)))
+        (if (and nm (not (-> *load-state* want i display?)) (fs-mapped? nm))
+            (want-display-level *load-state* nm 'display)
+            )
+        )
+      )
+    )
+  (none)
+  )

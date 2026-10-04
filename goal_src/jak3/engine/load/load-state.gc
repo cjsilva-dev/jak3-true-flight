@@ -157,6 +157,11 @@
       )
     )
   (add-borrow-levels this)
+  (when (and *fs-want-levels-hook* (not *fs-in-want-hook?*))
+    (set! *fs-in-want-hook?* #t)
+    (*fs-want-levels-hook*)
+    (set! *fs-in-want-hook?* #f)
+    )
   0
   )
 

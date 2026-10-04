@@ -1765,18 +1765,22 @@
                   (not (and (= *cheat-mode* 'debug) (cpad-hold? (-> self control cpad number) r2)))
                   )
              )
-        (send-event
-          self
-          'attack-invinc
-          #f
-          (static-attack-info :mask (vehicle-impulse-factor) ((id (new-attack-id))
-                                                              (damage 2.0)
-                                                              (vehicle-damage-factor 1.0)
-                                                              (vehicle-impulse-factor 1.0)
-                                                              (mode 'endlessfall)
-                                                              )
-                              )
-          )
+        ;; FLIGHT MOD: a fall through a level that wasn't there, right after flying, puts Jak back
+        ;; over solid ground instead (flight-stream.gc)
+        (if (not (and *fs-endlessfall-hook* (*fs-endlessfall-hook*)))
+            (send-event
+              self
+              'attack-invinc
+              #f
+              (static-attack-info :mask (vehicle-impulse-factor) ((id (new-attack-id))
+                                                                  (damage 2.0)
+                                                                  (vehicle-damage-factor 1.0)
+                                                                  (vehicle-impulse-factor 1.0)
+                                                                  (mode 'endlessfall)
+                                                                  )
+                                  )
+              )
+            )
         )
     )
   (set! (-> self control bend-speed) (if (logtest? (-> self control status) (collide-status on-surface))

@@ -481,6 +481,35 @@
   (none)
   )
 
+;; TRUE FLIGHT MOD: forget a wanted level that can't be loaded, together with every wanted level that
+;; names it as its master (the game stops with an assert when a sub-level loads without its master:
+;; wascitya without waswide, next to a loaded desert, crashed the game on 2026-10-03). The flight
+;; streamer hears about it through *fs-stream-failed*.
+(defun fs-drop-want ((name symbol))
+  (set! *fs-stream-failed* name)
+  (set! *fs-stream-failed-frame* (-> *display* real-clock frame-counter))
+  (let ((names (new 'stack-no-clear 'array 'symbol 10))
+        (n 0))
+    (dotimes (i 10)
+      (set! (-> names i) #f)
+      )
+    (dotimes (w 10)
+      (let ((nm (-> *load-state* want w name)))
+        (when (and nm (!= nm name) (< n 10))
+          (let ((info (lookup-level-info nm)))
+            (when (not (and info (= (-> info master-level) name)))
+              (set! (-> names n) nm)
+              (set! n (+ n 1))
+              )
+            )
+          )
+        )
+      )
+    (want-levels *load-state* names)
+    )
+  (none)
+  )
+
 (defmethod level-get-for-use ((this level-group) (arg0 symbol) (arg1 symbol))
   "Request a level by name in the given state.
    Will return quickly (non-blocking) and might not be able to get a level in the desired state,
@@ -527,8 +556,11 @@
                 )
               )
             (format 0 "ERROR: level ~A is loading before master-level ~A~%" arg0 s0-0)
-            (break!)
-            0
+            ;; TRUE FLIGHT MOD: the original stopped the game here (break!). Don't load the level:
+            ;; forget the want and hand back no level, like the no-free-slot case above.
+            (fs-drop-want arg0)
+            (set! s5-1 (the-as level #f))
+            (goto cfg-28)
             )
           )
         )
@@ -995,6 +1027,28 @@
     )
   0
   (none)
+  )
+
+;; TRUE FLIGHT: on PC a DGO object arrives every time load-continue is called, but the game only
+;; calls it a few times a frame, so a district's objects took as many frames. Keep calling
+;; while the DGO is still coming, within a small time budget per call site.
+(define *fs-load-budget-ms* 2.5)
+(defun load-continue-pc ((lev level))
+  (load-continue lev)
+  (when (and (< 0.0 *fs-load-budget-ms*)
+             (< (-> *display* real-clock frame-counter) *fs-fast-load-until*)
+             (!= lev (-> *level* level-default)))
+    (let ((start (the int (get-cpu-clock)))
+          (limit (the int (* 300000.0 *fs-load-budget-ms*)))
+          )
+      (while (and (or (= (-> lev status) 'loading) (= (-> lev status) 'loading-bt))
+                  (< (- (the int (get-cpu-clock)) start) limit)
+                  )
+        (load-continue lev)
+        )
+      )
+    )
+  lev
   )
 
 (defmethod load-begin ((this level))
@@ -1620,8 +1674,11 @@
                  )
                )
              )
-           #t
-           (break!)
+           ;; TRUE FLIGHT MOD: the original stopped the game here (break!). On PC a level that
+           ;; doesn't fit just isn't loaded: forget the want, remember the failure for the
+           ;; flight streamer, and leave this slot inactive.
+           (fs-drop-want (-> this name))
+           (return this)
            0
            )
           (else
@@ -2091,6 +2148,7 @@
     )
   (set! (-> arg0 draw-priority) (-> arg0 info draw-priority))
   (set! (-> arg0 status) 'loaded)
+  (fs-lvl-log "loaded" (-> arg0 name) #f #f)
   (do-nothing *level*)
   (mark-hud-warp-sprite-dirty *texture-pool*)
   (set! loading-level global)
@@ -2134,6 +2192,7 @@
            )
          (birth (-> this bsp))
          (set! (-> this status) 'alive)
+         (fs-lvl-log "alive" (-> this name) #f #f)
          (do-nothing *level*)
          (set! (-> this render?) #t)
          (copy-perms-to-level! *game-info* this)
@@ -2265,7 +2324,8 @@
                 (-> this name)
                 (-> v1-10 name)
                 )
-              (break!)
+              ;; TRUE FLIGHT MOD: the original stopped the game here (break!); carry on, the
+              ;; dependent level is on its way out too
               0
               )
             )
@@ -3351,6 +3411,7 @@
                       (< 1 (- (-> *display* real-clock integral-frame-counter) *dgo-time*)))
               (let ((lev-to-unload (-> *level* level a0-3)))
                 (format 0 "Discarding level ~A~%" (-> lev-to-unload name))
+                (fs-lvl-log "discard" (-> lev-to-unload name) (-> lev-to-unload status) #f)
                 (level-status-update! lev-to-unload 'inactive) ;; kill it.
                 )
               )
@@ -3401,8 +3462,10 @@
           (when (!= s4-1 -1)
             (when (and (or s5-1 (not (check-busy *load-dgo-rpc*))) (not (load-in-progress? *level*)))
               (format 0 "Adding level ~A~%" (-> this target s4-1 name))
+              (fs-lvl-log "add" (-> this target s4-1 name) #f #f)
               (let ((s3-1 (level-get-for-use *level* (-> this target s4-1 name) 'loaded)))
-                (when (and s5-1 (-> this target s4-1 display?))
+                ;; TRUE FLIGHT MOD: level-get-for-use can hand back no level now (see fs-drop-want)
+                (when (and s5-1 s3-1 (-> this target s4-1 display?))
                   (format 0 "Waiting for level to load~%")
                   (while (or (= (-> s3-1 status) 'loading) (= (-> s3-1 status) 'loading-bt) (= (-> s3-1 status) 'login))
                     (load-continue s3-1)
@@ -3576,7 +3639,7 @@
   (update *art-control* #t)
   (clear-rec *art-control*)
   (dotimes (s5-0 10)
-    (load-continue (-> this level s5-0))
+    (load-continue-pc (-> this level s5-0))
     )
   (dotimes (s5-1 (-> this length))
     (let ((s4-0 (-> this level s5-1)))
@@ -3868,6 +3931,41 @@
           (set! (-> lev-names i) (symbol->string (bsp-name (-> this level i))))
           (if (-> this level i display?)
               (set! (-> active-lev-names i) (-> lev-names i)))
+          )
+        )
+      )
+    ;; TRUE FLIGHT MOD: the renderer used to hear about a level only once its DGO had loaded and
+    ;; logged in, then read and uploaded the level's .fr3 after that. Name every wanted level
+    ;; too, so the .fr3 streams in while the DGO is still loading (or queued behind another),
+    ;; plus the one the flight code expects after that (a free renderer slot, nothing else).
+    (dotimes (w 11)
+      (let ((nm (if (< w 10) (-> *load-state* want w name) *fs-prewarm-level*))
+            (info (the-as level-load-info #f)))
+        (if nm
+            (set! info (lookup-level-info nm))
+            )
+        ;; only levels with an .fr3 of their own: not alias or borrow levels (the renderer
+        ;; asserts on a missing file)
+        (when (and nm info (!= (-> info memory-mode) (level-memory-mode alias)) (!= (-> info memory-mode) (level-memory-mode borrow)) (!= (-> info memory-mode) (level-memory-mode borrow0)) (!= (-> info memory-mode) (level-memory-mode borrow1)) (!= (-> info memory-mode) (level-memory-mode borrow2)) (!= (-> info memory-mode) (level-memory-mode borrow3)) (!= (-> info memory-mode) (level-memory-mode borrow4)) (!= (-> info memory-mode) (level-memory-mode borrow-city-small)))
+          (let ((s (symbol->string nm))
+                (have #f)
+                )
+            (dotimes (i 10)
+              (if (string= (-> lev-names i) s)
+                  (set! have #t)
+                  )
+              )
+            (when (not have)
+              (let ((placed #f))
+                (dotimes (i 10)
+                  (when (and (not placed) (string= (-> lev-names i) "none"))
+                    (set! (-> lev-names i) s)
+                    (set! placed #t)
+                    )
+                  )
+                )
+              )
+            )
           )
         )
       )

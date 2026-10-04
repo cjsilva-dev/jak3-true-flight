@@ -1,6 +1,9 @@
 ;;-*-Lisp-*-
 (in-package goal)
 
+;; TRUE FLIGHT MOD: set by the flight code while flying in the city (see the vis logic below)
+(define *fs-vis-from-air?* #f)
+
 ;; name: cam-update.gc
 ;; name in dgo: cam-update
 ;; dgos: GAME
@@ -142,7 +145,12 @@
                     (set! (-> s5-1 all-visible?) #f)
                     )
                   )
-                 ((and (= (-> s5-1 all-visible?) 'loading) (-> *level* play?))
+                 ;; TRUE FLIGHT MOD: a freshly loaded level has zeroed vis bits and all-visible? =
+                 ;; 'loading, and this clause left them that way until the camera was inside its
+                 ;; bsp. Arriving from the air it never is, so a new district drew nothing but its
+                 ;; actors (people and cars floating in black) until you came down to street
+                 ;; level. While flying, draw everything instead, as the else branch does.
+                 ((and (= (-> s5-1 all-visible?) 'loading) (-> *level* play?) (not *fs-vis-from-air?*))
                   )
                  (else
                    (quad-copy! (-> s5-1 vis-bits) (-> s5-1 bsp all-visible-list) a2-0)
