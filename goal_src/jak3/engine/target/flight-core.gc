@@ -191,7 +191,7 @@
                              :slope-up-traction 1.0
                              :align-speed 1.0
                              :mode 'air
-                             :flags (surface-flag check-edge air gun-off)
+                             :flags (surface-flag check-edge air gun-off no-board) ;; no JET-Board summon in flight (Corey, 2026-10-08)
                              )
         )
 
@@ -220,7 +220,7 @@
                              :slope-up-traction 1.0
                              :align-speed 1.0
                              :mode 'air
-                             :flags (surface-flag check-edge air gun-off)
+                             :flags (surface-flag check-edge air gun-off no-board) ;; no JET-Board summon in flight (Corey, 2026-10-08)
                              )
         )
 
@@ -249,7 +249,7 @@
                              :slope-up-traction 1.0
                              :align-speed 1.0
                              :mode 'air
-                             :flags (surface-flag check-edge air gun-off)
+                             :flags (surface-flag check-edge air gun-off no-board) ;; no JET-Board summon in flight (Corey, 2026-10-08)
                              )
         )
 
