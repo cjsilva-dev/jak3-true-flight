@@ -20,9 +20,15 @@ flying, Jak flinches in the air and flies on. There's no fall damage after flyin
 
 ## Dark Jak flies too
 
-As Dark Jak, **double-jump** to take off: Light Jak's wings burst out of him, reshaped into ragged,
-twitching dark wings that crackle with lightning. The controls are the same, but Dark Jak flies the way
-he does in Dark Flight (the Jak II mod), with exactly the same flight:
+As Dark Jak, **double-jump** to take off: Light Jak's wings burst out of him, reshaped into jagged,
+spiky, twitching dark wings with Dark Jak's own lightning crackling between the feathers. Their glow
+flickers like unstable dark eco and flares on every flap. **R3** while flying switches the wing style:
+
+- **Smoked glass** (the default): dark, see-through wings cut to the jagged shape of the feathers
+- **Glow**: Light Jak's see-through glow, in dark-eco purple
+
+The controls are the same, but Dark Jak flies the way he does in Dark Flight (the Jak II mod), with
+exactly the same flight:
 
 - fewer, harder flaps that throw him forward, and a heavier fall between them; each flap kicks in the
   moment you press X, and holding X lifts him higher
@@ -69,7 +75,8 @@ option off again. With both off — the default — the mod writes nothing to yo
 - `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo, dash, landing and Dark Jak's flight
 - `goal_src/jak3/engine/target/flight-core.gc` — the flight both mods share: Dark Jak's flap, glide, turbo, dash and
   posture, and the tuning both games agree on (the same file is in Dark Flight)
-- `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look (ragged shape, sparks, lightning)
+- `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look: jagged shape, colors and flicker, the two styles,
+  sparks and lightning (Light Jak's own colors are put back whenever he flies)
 - `goal_src/jak3/engine/target/target.gc` — Dark Jak takes off from the double jump
 - `goal_src/jak3/engine/target/target-death.gc` — a hit while flying is a flinch in the air
 - `goal_src/jak3/engine/common-obs/powerups.gc` — the wings are removed before their animations are unloaded
@@ -81,6 +88,9 @@ option off again. With both off — the default — the mod writes nothing to yo
   faster level loading, levels drawn as soon as they arrive from the air, and a level that can't load is skipped instead of stopping the game
 - `game/graphics/…/loader/*`, `game/graphics/pipelines/opengl.cpp` — **engine change:** the renderer uploads a new level's
   graphics faster and keeps more of them cached
+- `game/graphics/opengl_renderer/foreground/Merc2.*`, `shaders/merc2.frag`, `goal_src/jak3/engine/gfx/foreground/foreground.gc`,
+  `engine/data/art-h.gc` — **engine change:** a switch the game sets per model to draw it as a see-through surface instead of
+  a glow, with its darkest parts cut away (used only for Dark Jak's smoked-glass wings)
 
 ## Not included
 
