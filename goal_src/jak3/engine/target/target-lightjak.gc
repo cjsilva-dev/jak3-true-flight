@@ -1386,7 +1386,6 @@
   )
 
 (define *tf-fly-time* (the-as time-frame 0)) ;; last frame in a flight state
-(define *tf-safe-fall?* #f)                  ;; flew since last standing on something: no fall damage
 (define *tf-hit-frames* 0)                   ;; (see true-flight-hit-trans)
 (define *tf-hit-flying?* #f)                 ;; the current hit came while flying
 
@@ -1410,14 +1409,7 @@
         )
       )
     )
-  (cond
-    ((logtest? (-> self control status) (collide-status on-surface on-ground))
-     (set! *tf-safe-fall?* #f)
-     )
-    (*tf-safe-fall?*
-      (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
-      )
-    )
+  (fc-safe-fall-tick) ;; no fall damage between a flight and the next landing (flight-core.gc)
   (when *tf-dark-mode?*
     (cond
       ((or (not (true-flight-dark?)) (zero? (-> self lightjak)))
@@ -2396,20 +2388,7 @@
                                        )
         )
     ;; the hit
-    (let ((prev (-> self control danger-mode)))
-      (set! (-> self control bomb-scale) *fc-dash-hit-scale*)
-      (target-danger-set! 'bomb #f)
-      (update-transforms (-> self control))
-      (let ((a1 (new 'stack-no-clear 'overlaps-others-params)))
-        (set! (-> a1 options) (overlaps-others-options))
-        (set! (-> a1 collide-with-filter) (the-as collide-spec -1))
-        (set! (-> a1 tlist) *touching-list*)
-        (find-overlapping-shapes (-> self control) a1)
-        )
-      (set! (-> self control bomb-scale) 0.0)
-      (target-danger-set! prev #f)
-      (update-transforms (-> self control))
-      )
+    (fc-dash-hit)
       )
     )
   (none)
@@ -2601,7 +2580,7 @@
   (set! *true-flight-cam?* #t) ;; camera follows Jak's height (see cam-master.gc)
   (set-time! *tf-fly-time*)   ;; (a hit right now is a hit in flight)
   (set! *tf-hit-frames* 0)
-  (set! *tf-safe-fall?* #t)   ;; no fall damage until Jak next stands on something
+  (set! *fc-safe-fall?* #t)   ;; no fall damage until Jak next stands on something
   (set! *tf-launching?* (< (current-time) *tf-launch-until*))
   (set! (-> self node-list data 3 param0) true-flight-main-joint)
   (if *tf-dark-mode?* ;; Dark Jak hunches (chest, node 6)
@@ -3137,16 +3116,6 @@
   :post target-post
   )
 
-(defbehavior true-flight-slam-anim target ((idx int) (blend time-frame))
-  "Start jakb animation slot IDX if it is loaded (a missing one would crash). Returns #t if started."
-  (let ((a (-> self draw art-group data idx)))
-    (when a
-      (ja-channel-push! 1 blend)
-      (ja-no-eval :group! (the-as art-joint-anim a) :num! (seek!) :frame-num 0.0)
-      #t
-      )
-    )
-  )
 
 (defbehavior tf-dark-bomb-flash process-drawable ()
   "The dark bomb blast's flash (white, to purple, to nothing), as target-darkjak-bomb0 does it."
@@ -3179,14 +3148,14 @@
   "Start the landing pose: Dark Jak's bomb-land (468) for a dark slam once the dark set is back,
    else Light Jak's freeze-land, else the plain ground-pound landing (always loaded)."
   (cond
-    ((and *tf-dark-slam?* (true-flight-slam-anim 468 blend))
+    ((and *tf-dark-slam?* (fc-slam-anim 468 blend))
      #t
      )
-    ((true-flight-slam-anim *tf-slam-land-anim* blend)
+    ((fc-slam-anim *tf-slam-land-anim* blend)
      #t
      )
     (else
-      (true-flight-slam-anim 67 blend)
+      (fc-slam-anim 67 blend)
       )
     )
   )
@@ -3273,7 +3242,7 @@
     )
   :code (behavior ()
     (sound-play "ltjak-flap")
-    (true-flight-slam-anim *tf-slam-dive-anim* (seconds 0.1))
+    (fc-slam-anim *tf-slam-dive-anim* (seconds 0.1))
     (set! *tf-slam-impact* *fc-slam-speed*)
     (set! *tf-slam-braced?* #f)
     (until (logtest? (-> self control status) (collide-status on-surface))
@@ -3294,7 +3263,7 @@
       ;; dark slam: once the dark set is back, dive in the dark bomb's plunge pose
       (when (and *tf-dark-slam?* (not *tf-dark-slam-diving?*) (not *tf-slam-braced?*)
                  (= (-> self ext-anim) (target-anim dark))
-                 (true-flight-slam-anim 467 (seconds 0.1))
+                 (fc-slam-anim 467 (seconds 0.1))
                  )
         (set! *tf-dark-slam-diving?* #t)
         )

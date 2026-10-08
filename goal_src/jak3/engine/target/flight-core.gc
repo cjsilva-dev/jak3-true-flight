@@ -64,3 +64,48 @@
 (define *fc-hit-stagger*              18)                 ;; frames of in-air flinch before flying on (~0.3 s)
 (define *fc-launch-time*              (seconds 0.6))      ;; a flap mid-glide shows the flap pose this long
 (define *fc-pitch-step*               8.0)                ;; degrees per frame toward the target
+
+;; ---- Shared mechanics: identical in both games (moved here 2026-10-08, no behaviour change) ----
+(define *fc-safe-fall?* #f) ;; flew since last standing on something: no fall damage
+
+(defbehavior fc-safe-fall-tick target ()
+  "Called every frame of Jak's flight bookkeeping: until he next stands on something after a flight,
+   the game's fall-damage reference point follows him, so no fall ever counts as a fall."
+  (cond
+    ((logtest? (-> self control status) (collide-status on-surface on-ground))
+     (set! *fc-safe-fall?* #f)
+     )
+    (*fc-safe-fall?*
+      (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
+      )
+    )
+  )
+
+(defbehavior fc-slam-anim target ((idx int) (blend time-frame))
+  "Start jakb art slot IDX if it is loaded (a missing animation crashes). #t if started."
+  (let ((a (-> self draw art-group data idx)))
+    (when a
+      (ja-channel-push! 1 blend)
+      (ja-no-eval :group! (the-as art-joint-anim a) :num! (seek!) :frame-num 0.0)
+      #t
+      )
+    )
+  )
+
+(defbehavior fc-dash-hit target ()
+  "The dash's hit: for one moment Jak is a small dark bomb (*fc-dash-hit-scale* of its size)."
+  (let ((prev (-> self control danger-mode)))
+    (set! (-> self control bomb-scale) *fc-dash-hit-scale*)
+    (target-danger-set! 'bomb #f)
+    (update-transforms (-> self control))
+    (let ((a1 (new 'stack-no-clear 'overlaps-others-params)))
+      (set! (-> a1 options) (overlaps-others-options))
+      (set! (-> a1 collide-with-filter) (the-as collide-spec -1))
+      (set! (-> a1 tlist) *touching-list*)
+      (find-overlapping-shapes (-> self control) a1)
+      )
+    (set! (-> self control bomb-scale) 0.0)
+    (target-danger-set! prev #f)
+    (update-transforms (-> self control))
+    )
+  )
