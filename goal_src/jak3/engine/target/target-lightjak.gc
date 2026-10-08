@@ -2199,32 +2199,6 @@
 ;; Dark Jak flies as in Dark Flight (Jak II): his flap, glide, turbo and dash are the shared ones in
 ;; flight-core.gc (see true-flight-dark-fly-a). What is his own here is the look: a hunched,
 ;; predatory posture, the forward lean into a glide, dark sounds and the dark wing effects.
-(define *tf-dark-glide-pitch*  30.0)         ;; leans forward into the glide, degrees (Light: upright)
-(define *tf-dark-hunch*        25.0)         ;; chest hunched forward while flying, degrees
-(define *tf-dark-hunch-now*    0.0)
-
-(defun true-flight-dark-chest-joint ((node cspace) (tq transformq))
-  "Hunches Dark Jak's chest forward while he flies; eases back and unhooks itself after."
-  (let ((want (if (and *tf-dark-mode?* *true-flight-cam?*) *tf-dark-hunch* 0.0)))
-    (set! *tf-dark-hunch-now* (if (< *tf-dark-hunch-now* want)
-                                  (fmin want (+ *tf-dark-hunch-now* 2.0))
-                                  (fmax want (- *tf-dark-hunch-now* 2.0))
-                                  )
-          )
-    )
-  (cond
-    ((!= *tf-dark-hunch-now* 0.0)
-     (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 1.0 0.0 0.0 (degrees *tf-dark-hunch-now*))))
-       (quaternion*! (-> tq quat) r (-> tq quat))
-       )
-     )
-    ((not *tf-dark-mode?*)
-     (set! (-> node param0) #f)
-     )
-    )
-  (cspace<-parented-transformq-joint! node tq)
-  (none)
-  )
 
 (defbehavior true-flight-flap-sound target ()
   (if *tf-dark-mode?*
@@ -2381,7 +2355,6 @@
 ;; bone "main" (node 3, otherwise unused); attached every frame in true-flight-lift (the bone
 ;; keeps whatever function object it was given), and it unhooks itself once Jak is upright.
 (define *tf-glide-pitch*  0.0)    ;; body tilt while gliding (Light Jak's glide pose is upright)
-(define *tf-launch-pitch* -27.0)  ;; launch: 27 degrees nose-up from the glide (same change as Jak 2's 72 -> 45)
 (define *tf-body-pitch*   0.0)
 (define *tf-launch-until* (the-as time-frame 0))
 (define *tf-launching?*   #f)
@@ -2389,8 +2362,8 @@
 
 (defun true-flight-main-joint ((node cspace) (tq transformq))
   (let ((want (cond
-                (*tf-launching?* *tf-launch-pitch*)
-                (*tf-tilt-glide?* (if *tf-dark-mode?* *tf-dark-glide-pitch* *tf-glide-pitch*))
+                (*tf-launching?* *fc-launch-pitch*)
+                (*tf-tilt-glide?* (if *tf-dark-mode?* *fc-dark-glide-pitch* *tf-glide-pitch*))
                 (else 0.0)
                 )
               )
@@ -2555,13 +2528,14 @@
   "Per-frame while flying: floaty gravity, higher camera. (Light form is kept up by the
    keep-alive state list in target-lightjak-process, not by the effect timer.)"
   (set! *true-flight-cam?* #t) ;; camera follows Jak's height (see cam-master.gc)
+  (set! *fc-hunching?* *tf-dark-mode?*) ;; Dark Jak hunches while he flies
   (set-time! *tf-fly-time*)   ;; (a hit right now is a hit in flight)
   (set! *tf-hit-frames* 0)
   (set! *fc-safe-fall?* #t)   ;; no fall damage until Jak next stands on something
   (set! *tf-launching?* (< (current-time) *tf-launch-until*))
   (set! (-> self node-list data 3 param0) true-flight-main-joint)
   (if *tf-dark-mode?* ;; Dark Jak hunches (chest, node 6)
-      (set! (-> self node-list data 6 param0) true-flight-dark-chest-joint)
+      (set! (-> self node-list data 6 param0) fc-dark-chest-joint)
       )
   (true-flight-city)
   (set! (-> self control dynam gravity-length) (if *tf-dark-mode?* *fc-dark-gravity* TF-GRAVITY))
@@ -2909,6 +2883,7 @@
       (remove-setting! 'string-spline-accel)
       )
     (set! *true-flight-cam?* #f) ;; TRUE FLIGHT MOD (flight states set it again every frame)
+    (set! *fc-hunching?* #f)
     (set! *tf-launching?* #f)
     (set! *tf-tilt-glide?* #f)
     (target-exit)
@@ -3283,6 +3258,7 @@
     (set! (-> self control dynam gravity-max) (-> self control standard-dynamics gravity-max))
     (set! (-> self control dynam gravity-length) (-> self control standard-dynamics gravity-length))
     (set! *true-flight-cam?* #f)
+    (set! *fc-hunching?* #f)
     (set! (-> self control bomb-scale) 0.0)
     (when *tf-dark-slam?*
       (set! *tf-dark-slam?* #f)
@@ -3318,6 +3294,7 @@
         (set! (-> self pending-ext-anim) (target-anim dark))
         )
     (set! *true-flight-cam?* #t)
+    (set! *fc-hunching?* *tf-dark-mode?*)
     ;; the plunge is still flight: streaming, the game's current level and the abyss net keep running
     (fs-tick)
     )

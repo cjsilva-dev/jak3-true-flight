@@ -483,3 +483,36 @@
     )
   (none)
   )
+
+;; ---- Dark Jak's flying posture (from True Flight, 2026-10-08) ----
+;; He hunches his chest forward while he flies and leans into a glide; a big flap out of a glide
+;; lifts his nose. Each game sets *fc-hunching?* while Dark Jak flies and hooks fc-dark-chest-joint
+;; onto Jak's chest bone (node 6); the lean is each game's own body-tilt callback on node 3.
+(define *fc-dark-hunch*       25.0)  ;; chest hunched forward while flying, degrees
+(define *fc-dark-hunch-now*   0.0)
+(define *fc-hunching?*        #f)    ;; Dark Jak is flying (set by each game every frame it flies)
+(define *fc-dark-glide-pitch* 30.0)  ;; leans forward into the glide, degrees
+(define *fc-launch-pitch*     -27.0) ;; a flap out of a glide: 27 degrees nose-up
+
+(defun fc-dark-chest-joint ((node cspace) (tq transformq))
+  "Hunches Dark Jak's chest forward while he flies; eases back and unhooks itself after."
+  (let ((want (if *fc-hunching?* *fc-dark-hunch* 0.0)))
+    (set! *fc-dark-hunch-now* (if (< *fc-dark-hunch-now* want)
+                                  (fmin want (+ *fc-dark-hunch-now* 2.0))
+                                  (fmax want (- *fc-dark-hunch-now* 2.0))
+                                  )
+          )
+    )
+  (cond
+    ((!= *fc-dark-hunch-now* 0.0)
+     (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 1.0 0.0 0.0 (degrees *fc-dark-hunch-now*))))
+       (quaternion*! (-> tq quat) r (-> tq quat))
+       )
+     )
+    ((not *fc-hunching?*)
+     (set! (-> node param0) #f)
+     )
+    )
+  (cspace<-parented-transformq-joint! node tq)
+  (none)
+  )
