@@ -529,3 +529,15 @@
     )
   (none)
   )
+
+;; ---- Dark Jak's wing crackle (2026-10-08): the same in both games ----
+;; His own idle crackle, as bolts running between two bones of his wings (they follow the flap).
+;; Each game picks the bones (its wings differ) and its Dark Jak's lightning spec.
+(define *fc-wing-arc-chance* 0.25) ;; per frame while the wings show (Dark Jak standing crackles about as often)
+
+(defbehavior fc-wing-arc process-drawable ((spec lightning-spec) (j1 int) (j2 int))
+  "One bolt of crackle from bone J1 to bone J2 of this (wings) process."
+  (process-spawn lightning-tracker :init lightning-tracker-init spec 0
+                 lightning-probe-callback self (the-as vector j1) (the-as vector j2) :name "lightning-tracker" :to self)
+  (none)
+  )

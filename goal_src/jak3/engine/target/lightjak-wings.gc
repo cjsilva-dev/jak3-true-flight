@@ -7,7 +7,11 @@
 
 (define-extern wings-ragdoll-proc-init-by-other (function ragdoll-proc object :behavior wings-ragdoll-proc))
 (define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
+(define-extern *fc-wing-arc-chance* float) ;; (flight-core.gc)
+(define-extern fc-wing-arc (function lightning-spec int int none :behavior process-drawable))
 (define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
+(define-extern *fc-wing-arc-chance* float) ;; (flight-core.gc)
+(define-extern fc-wing-arc (function lightning-spec int int none :behavior process-drawable))
 
 ;; TRUE FLIGHT: Dark Jak's wings are made of unstable dark eco. Same model as Light Jak's, but on him:
 ;; - two styles, switched with R3 while flying (as Dark Flight's wing switch):
@@ -45,8 +49,7 @@
 (define *tf-dark-wing-gutter* 0.03) ;; chance per frame the glow nearly goes out
 (define *tf-dark-wing-flare* 0.0)   ;; 1 on a flap, fades out
 (define *tf-dark-wing-flare-seen* (the-as time-frame 0))
-;; crackle between the feathers (Dark Jak's own idle crackle, lightning spec 7)
-(define *tf-dark-wing-arc-chance* 0.25)
+;; crackle between the feathers: fc-wing-arc (flight-core.gc) with Dark Jak's own idle crackle, spec 7
 
 (defun tf-wings-colors ((gr int) (gg int) (gb int) (br float) (bg float) (bb float) (geo merc-ctrl))
   "Set the wing model's envmap glow tint and the wing texture animation's layer colors."
@@ -219,15 +222,14 @@
         )
       )
     ;; Dark Jak's crackle, running from a bone of one feather to a bone of the next (it follows the flap)
-    (when (rand-vu-percent? *tf-dark-wing-arc-chance*)
+    (when (rand-vu-percent? *fc-wing-arc-chance*)
       (let* ((c (rand-vu-int-range 0 6))
              (c2 (if (= c 3) 2 (+ c 1)))
              (j1 (+ 4 (* c 5) (rand-vu-int-range 1 4)))
              (j2 (+ 4 (* c2 5) (rand-vu-int-range 1 4)))
              )
         (when (and (< j1 (-> self node-list length)) (< j2 (-> self node-list length)))
-          (process-spawn lightning-tracker :init lightning-tracker-init (-> *lightning-spec-id-table* 7) 0
-                         lightning-probe-callback self (the-as vector j1) (the-as vector j2) :name "lightning-tracker" :to self)
+          (fc-wing-arc (-> *lightning-spec-id-table* 7) j1 j2) ;; (flight-core.gc)
           )
         )
       )
