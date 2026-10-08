@@ -21,11 +21,13 @@ flying, Jak flinches in the air and flies on. There's no fall damage after flyin
 ## Dark Jak flies too
 
 As Dark Jak, **double-jump** to take off: Light Jak's wings burst out of him, reshaped into ragged,
-twitching dark wings that crackle with lightning. The controls are the same, but Dark Jak flies his own
-way:
+twitching dark wings that crackle with lightning. The controls are the same, but Dark Jak flies the way
+he does in Dark Flight (the Jak II mod), with exactly the same flight:
 
-- fewer, harder flaps that throw him forward, and a heavier fall between them
-- a faster glide that cuts sharper turns, leaning into it
+- fewer, harder flaps that throw him forward, and a heavier fall between them; each flap kicks in the
+  moment you press X, and holding X lifts him higher
+- **R1** right after a flap is a turbo; holding **L1** glides, sinking faster and cutting sharper turns
+  than Light Jak, leaning into it with his chest hunched forward
 - **tap R1** for a dash attack: a lunge in a streak of dark energy and lightning that hits whatever he
   flies through
 - **Square** is the real Dark Bomb: the wings fold, he dives in the bomb pose and lands in its blast
@@ -65,6 +67,8 @@ option off again. With both off — the default — the mod writes nothing to yo
 ## What this mod changes
 
 - `goal_src/jak3/engine/target/target-lightjak.gc` — the flight, glide, turbo, dash, landing and Dark Jak's flight
+- `goal_src/jak3/engine/target/flight-core.gc` — the flight both mods share: Dark Jak's flap, glide, turbo, dash and
+  posture, and the tuning both games agree on (the same file is in Dark Flight)
 - `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look (ragged shape, sparks, lightning)
 - `goal_src/jak3/engine/target/target.gc` — Dark Jak takes off from the double jump
 - `goal_src/jak3/engine/target/target-death.gc` — a hit while flying is a flinch in the air
