@@ -2195,22 +2195,13 @@
 (defconstant TF-CLIMB-CAP    (meters 20))  ;; fastest climb from stacked flaps
 (defconstant TF-GRAVITY      81920.0)      ;; ~20 m/s^2 (vanilla flap window used 163840)
 
-;; === DARK JAK FLIGHT: its own feel ===
-;; Light Jak floats; Dark Jak surges. Fewer, harder flaps that throw him forward, heavier between
-;; flaps, a glide that sinks faster and cuts sharper, a hunched predatory posture, dark sounds, and
-;; R1 turns the boost into a ram that hits whatever he flies through.
+;; === DARK JAK FLIGHT: his look ===
+;; Dark Jak flies as in Dark Flight (Jak II): his flap, glide, turbo and dash are the shared ones in
+;; flight-core.gc (see true-flight-dark-fly-a). What is his own here is the look: a hunched,
+;; predatory posture, the forward lean into a glide, dark sounds and the dark wing effects.
 (define *tf-dark-glide-pitch*  30.0)         ;; leans forward into the glide, degrees (Light: upright)
 (define *tf-dark-hunch*        25.0)         ;; chest hunched forward while flying, degrees
 (define *tf-dark-hunch-now*    0.0)
-
-(define *tf-dark-swoop-mods* (let ((m (copy *lightjak-swoop-mods* 'global)))
-                               (set! (-> m name) 'dark-swoop)
-                               (set! (-> m transv-max) (meters 26))
-                               (set! (-> m target-speed) (meters 26))
-                               (set! (-> m turnv) 163840.0)
-                               m
-                               )
-  )
 
 (defun true-flight-dark-chest-joint ((node cspace) (tq transformq))
   "Hunches Dark Jak's chest forward while he flies; eases back and unhooks itself after."
@@ -2240,21 +2231,6 @@
       (sound-play "djak-pnch-swing" :pitch -0.35) ;; a heavy dark whoosh, not Light Jak's chime
       (sound-play "ltjak-flap")
       )
-  (none)
-  )
-
-(defbehavior true-flight-dark-flap target ()
-  "Right after a flap's lift: Dark Jak surges forward and the wings flare (and often crackle)."
-  (when *tf-dark-mode?*
-    (if (rand-vu-percent? 0.5)
-        (set! *tf-dark-wing-zap?* #t)
-        )
-    (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
-      (set! (-> fwd y) 0.0)
-      (vector-normalize! fwd 1.0)
-      (vector+float*! (-> self control transv) (-> self control transv) fwd *fc-dark-flap-surge*)
-      )
-    )
   (none)
   )
 
@@ -2357,20 +2333,26 @@
         (activate! *camera-smush-control* 150.0 15 30 1.0 0.9 (-> *display* camera-clock))
         )
       )
-    (if *tf-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
-        (set! *tf-glide-speed* (fmax *tf-glide-speed* (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
+    (if *tf-dark-mode?*
+        (fc-dash-glide-bump) ;; Dark Jak: as in Dark Flight
+        (if *tf-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
+            (set! *tf-glide-speed* (fmax *tf-glide-speed* (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
+            )
         )
     )
   (when *tf-dark-dashing?*
-    (when (not *tf-gliding?*)
-      (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
-        (set! (-> fwd y) 0.0)
-        (vector-normalize! fwd (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*))
-        (set! (-> self control transv x) (-> fwd x))
-        (set! (-> self control transv z) (-> fwd z))
-        (set! (-> self control transv y) (fmax 0.0 (-> self control transv y))) ;; a level lunge
+    (if *tf-dark-mode?*
+        (fc-dash-lunge) ;; Dark Jak: Dark Flight's lunge and dash surface
+        (when (not *tf-gliding?*)
+          (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
+            (set! (-> fwd y) 0.0)
+            (vector-normalize! fwd (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*))
+            (set! (-> self control transv x) (-> fwd x))
+            (set! (-> self control transv z) (-> fwd z))
+            (set! (-> self control transv y) (fmax 0.0 (-> self control transv y))) ;; a level lunge
+            )
+          )
         )
-      )
     (when (not *tf-dark-mode?*) ;; Light Jak: a streak of glittering stars (fairy dust) -- only the
       ;; crisp stars: soft glows and the dense glitter burst read as a white cloud
       (dotimes (i 16)
@@ -2525,10 +2507,7 @@
         )
     (let ((f (if (cpad-hold? (-> self control cpad number) l1)
                  (fmin *fc-big-flap-cap* (+ *fc-big-flap-impulse* (fmax 0.0 vspeed)))
-                 (if *tf-dark-mode?* ;; Dark Jak: fewer, harder flaps
-                     (fmin *fc-dark-climb-cap* (+ *fc-dark-flap-impulse* (fmax 0.0 vspeed)))
-                     (fmin TF-CLIMB-CAP (+ TF-FLAP-IMPULSE (fmax 0.0 vspeed)))
-                     )
+                 (fmin TF-CLIMB-CAP (+ TF-FLAP-IMPULSE (fmax 0.0 vspeed))) ;; (Light Jak; Dark Jak's flap is Dark Flight's)
                  )
              )
           )
@@ -2592,21 +2571,31 @@
   (vector-copy! (-> self control last-trans-any-surf) (-> self control trans))
   ;; Hold R1 to fly fast -- only while flapping (the glide has its own turbo). In the plain fall
   ;; after you stop flapping, R1 used to fling Jak off into the distance.
-  (true-flight-dark-ram) ;; Dark Jak's R1 dash
-  (set! (-> self control mod-surface)
-        (if (or *tf-dark-dashing?*
-                (and (cpad-hold? (-> self control cpad number) r1)
-                     (!= (-> self state name) 'target-lightjak-swoop-falling)
-                     )
+  (cond
+    (*tf-dark-mode?*
+      ;; Dark Jak flies as in Dark Flight (flight-core.gc): its surfaces, R1 turbo only right after a
+      ;; flap, and the dash sets its own no-steering surface
+      (set! (-> self control mod-surface) (fc-dark-fly-surface))
+      (true-flight-dark-ram)
+      )
+    (else
+      (true-flight-dark-ram) ;; Light Jak's R1 dash
+      (set! (-> self control mod-surface)
+            (if (or *tf-dark-dashing?*
+                    (and (cpad-hold? (-> self control cpad number) r1)
+                         (!= (-> self state name) 'target-lightjak-swoop-falling)
+                         )
+                    )
+                (cond
+                  (*tf-dark-dashing?* *tf-dark-dash-mods*)
+                  (*fc-in-city?* *lightjak-swoop-city-fast-mods*)
+                  (else *lightjak-swoop-fast-mods*)
+                  )
+                *lightjak-swoop-mods*
                 )
-            (cond
-              (*tf-dark-dashing?* *tf-dark-dash-mods*)
-              (*fc-in-city?* *lightjak-swoop-city-fast-mods*)
-              (else *lightjak-swoop-fast-mods*)
-              )
-            (if *tf-dark-mode?* *tf-dark-swoop-mods* *lightjak-swoop-mods*)
             )
-        )
+      )
+    )
   ;; NOTE: an earlier version damped your climb near the ceiling, but the ceiling is measured
   ;; from the ground *below* you, so flying out over a chasm made it yank altitude away at
   ;; random. The ceiling is now only enforced in the flap (no boost up there) -- nothing ever
@@ -2682,15 +2671,9 @@
                                 )
         )
 
-(define *tf-dark-glide-mods* (let ((m (copy *tf-glide-mods* 'global)))
-                               (set! (-> m name) 'dark-glide)
-                               (set! (-> m turnv) 98304.0) ;; cuts sharper than Light's glide
-                               m
-                               )
-  )
-
 (defbehavior true-flight-glide target ()
-  "Per-frame in swoop-falling. While L1 is held: glide physics. Returns #t while gliding."
+  "Per-frame in swoop-falling (Light Jak; Dark Jak glides with fc-dark-glide). While L1 is held: glide
+   physics. Returns #t while gliding."
   (cond
     ((not (cpad-hold? (-> self control cpad number) l1))
      (set! *tf-tilt-glide?* #f)
@@ -2711,8 +2694,8 @@
              (fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control)))
              (dt (seconds-per-frame))
              (diving? (cpad-hold? (-> self control cpad number) r1)) ;; = turbo
-             (sink (if diving? *fc-glide-turbo-sink* (if *tf-dark-mode?* *fc-dark-glide-sink* *tf-glide-sink*)))
-             (cruise (if *tf-dark-mode?* *fc-dark-glide-cruise* *tf-glide-cruise*))
+             (sink (if diving? *fc-glide-turbo-sink* *tf-glide-sink*))
+             (cruise *tf-glide-cruise*)
              (speed-before *tf-glide-speed*)
              )
         (set! *tf-tilt-glide?* #t)
@@ -2772,7 +2755,7 @@
         (vector-normalize! fwd *tf-glide-speed*)
         (vector+! tv fwd (vector-float*! (new-stack-vector0) up vs))
         (set! (-> self control dynam gravity-length) *fc-glide-gravity*)
-        (set! (-> self control mod-surface) (if *tf-dark-mode?* *tf-dark-glide-mods* *tf-glide-mods*))
+        (set! (-> self control mod-surface) *tf-glide-mods*)
         #t
         )
       )
@@ -2790,6 +2773,58 @@
                          )
                    )
       )
+  (none)
+  )
+
+;; === DARK JAK FLIES AS IN DARK FLIGHT (Jak II) ===
+;; Dark Jak's flap, held flap, turbo and glide are Dark Flight's own (flight-core.gc), called in the
+;; same order as Dark Flight's dark-flight-air: X flaps at once (not partway into the flap animation),
+;; holding X keeps lifting, R1 right after a flap is the turbo, holding L1 glides anywhere. The swoop
+;; states below only play the animations for him (a flap restarts swoop-again; a glide shows in
+;; swoop-falling). Light Jak's flight is unchanged.
+(define *tf-dark-flapped?* #f) ;; Dark Jak flapped this frame: show it (swoop-again)
+
+(defbehavior true-flight-dark-beat target ()
+  "Dark Jak's flap: Dark Flight's lift and surge, plus his wing flare and the launch tilt out of a glide."
+  (if (rand-vu-percent? 0.5)
+      (set! *tf-dark-wing-zap?* #t)
+      )
+  (if *fc-flap-from-glide?*
+      (set! *tf-launch-until* (+ (current-time) *fc-launch-time*))
+      )
+  (fc-dark-flap-lift)
+  (none)
+  )
+
+(defbehavior true-flight-dark-fly-a target ()
+  "Per frame, before true-flight-lift: X flaps (the press is eaten), holding X keeps lifting."
+  (set! *tf-dark-flapped?* #f)
+  (when (cpad-pressed? (-> self control cpad number) x)
+    (logclear! (-> *cpad-list* cpads (-> self control cpad number) button0-rel 0) (pad-buttons x))
+    (when (fc-flap-ready? #f)
+      (fc-flap-begin!)
+      (true-flight-dark-beat)
+      (fc-flap-end!)
+      (set! *tf-dark-flapped?* #t)
+      )
+    )
+  (fc-dark-flap-hold-tick)
+  (none)
+  )
+
+(defbehavior true-flight-dark-fly-b target ()
+  "Per frame, after true-flight-lift: the flapping turbo, then the glide (hold L1)."
+  (if (fc-fly-turbo-on?)
+      (fc-dark-fly-turbo)
+      )
+  (if (cpad-hold? (-> self control cpad number) l1)
+      (fc-dark-glide)
+      (fc-dark-glide-end)
+      )
+  ;; the glide pose, tilt and wing rate follow the shared glide
+  (set! *tf-gliding?* *fc-gliding?*)
+  (set! *tf-tilt-glide?* *fc-gliding?*)
+  (set! *tf-glide-speed* *fc-glide-speed*)
   (none)
   )
 
@@ -2830,13 +2865,18 @@
             )
         (set! (-> self control unknown-float35) (* 0.0016666667 (* 285.0 f0-6) f30-0))
         )
-      (set! (-> self control dynam gravity-max) 245760.0)
-      (set! (-> self control dynam gravity-length) f30-0)
+      (when (not *tf-dark-mode?*) ;; (Dark Jak keeps Dark Flight's gravity and surface)
+        (set! (-> self control dynam gravity-max) 245760.0)
+        (set! (-> self control dynam gravity-length) f30-0)
+        )
       )
     (logclear! (-> self control status) (collide-status on-surface on-ground touch-surface))
-    (set! (-> self control mod-surface) *lightjak-swoop-mods*)
-    (set-setting! 'string-min-height 'low (meters 1) 0)
-    (set-setting! 'string-max-height 'low (meters 10) 0)
+    (if (not *tf-dark-mode?*)
+        (set! (-> self control mod-surface) *lightjak-swoop-mods*)
+        )
+    ;; Dark Jak: the camera pinned 1-10 m above him, as in Dark Flight ('low let it sag behind)
+    (set-setting! 'string-min-height (if *tf-dark-mode?* 'abs 'low) (meters 1) 0)
+    (set-setting! 'string-max-height (if *tf-dark-mode?* 'abs 'low) (meters 10) 0)
     ;; TRUE FLIGHT MOD: keep the vanilla camera height band (string-max-height is how high the
     ;; CAMERA floats above Jak, not how high Jak can fly) and let it keep up while climbing fast.
     ;; (catch-up raised with the 90 m/s R1 boost so the camera doesn't trail)
@@ -2850,10 +2890,15 @@
     (remove-setting! 'board)
     (remove-setting! 'gun)
     (when (not (and (-> self next-state) (let ((v1-7 (-> self next-state name)))
-                                           (or (= v1-7 'target-lightjak-swoop) (= v1-7 'target-lightjak-swoop-again))
+                                           (or (= v1-7 'target-lightjak-swoop) (= v1-7 'target-lightjak-swoop-again)
+                                               (and *tf-dark-mode?* (= v1-7 'target-lightjak-swoop-falling))
+                                               )
                                            )
                     )
                )
+      (if *tf-dark-mode?* ;; out of flight: no glide
+          (fc-dark-glide-end)
+          )
       (set! (-> self control dynam gravity-max) (-> self control standard-dynamics gravity-max))
       (set! (-> self control dynam gravity-length) (-> self control standard-dynamics gravity-length))
       (remove-setting! 'string-min-height)
@@ -2876,15 +2921,33 @@
         (set-time! (-> self control sliding-start-time))
         (set! (-> self control unknown-word04) (the-as uint #f))
         )
-    (true-flight-lift) ;; TRUE FLIGHT MOD (vanilla restored normal gravity here after 0.2s)
-    (true-flight-flap-hold) ;; TRUE FLIGHT MOD: hold X for a bigger flap
-    (if (cpad-pressed? (-> self control cpad number) square) ;; TRUE FLIGHT: superhero landing
-        (go target-lightjak-slam)
+    (cond
+      (*tf-dark-mode?* ;; Dark Jak: Dark Flight's flight (see true-flight-dark-fly-a)
+        (true-flight-dark-fly-a)
+        (true-flight-lift)
+        (true-flight-dark-fly-b)
+        (if (cpad-pressed? (-> self control cpad number) square)
+            (go target-lightjak-slam)
+            )
+        (if *tf-dark-flapped?* ;; a new flap: replay the flap animation
+            (go target-lightjak-swoop-again 1.0)
+            )
+        (if (and *fc-gliding?* (time-elapsed? (-> self state-time) (seconds 0.1))) ;; the glide pose
+            (go target-lightjak-swoop-falling #f)
+            )
         )
-    ;; TRUE FLIGHT GLIDE: tap L1 mid-flap to break into a glide
-    (if (and (cpad-pressed? (-> self control cpad number) l1) (time-elapsed? (-> self state-time) (seconds 0.1)))
-        (go target-lightjak-swoop-falling #f)
+      (else
+        (true-flight-lift) ;; TRUE FLIGHT MOD (vanilla restored normal gravity here after 0.2s)
+        (true-flight-flap-hold) ;; TRUE FLIGHT MOD: hold X for a bigger flap
+        (if (cpad-pressed? (-> self control cpad number) square) ;; TRUE FLIGHT: superhero landing
+            (go target-lightjak-slam)
+            )
+        ;; TRUE FLIGHT GLIDE: tap L1 mid-flap to break into a glide
+        (if (and (cpad-pressed? (-> self control cpad number) l1) (time-elapsed? (-> self state-time) (seconds 0.1)))
+            (go target-lightjak-swoop-falling #f)
+            )
         )
+      )
     (if (or (and (< (vector-dot (-> self control dynam gravity-normal) (-> self control transv)) 0.0)
                  (and (< (target-height-above-ground) 4096.0)
                       (or (= (-> self control gspot-pat-surfce mode) (pat-mode ground))
@@ -2908,23 +2971,32 @@
         (ja-no-eval :group! jakb-lightjak-swoop1-ja :num! (seek!) :frame-num 0.0)
         )
     (set! *tf-dark-takeoff?* #f)
-    (let ((v1-16 (new-stack-vector0)))
-      (let ((f0-5 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
-        0.0
-        (vector-! v1-16 (-> self control transv) (vector-float*! v1-16 (-> self control dynam gravity-normal) f0-5))
+    (cond
+      (*tf-dark-mode?* ;; Dark Jak's takeoff flap (swoop is only entered at takeoff for him;
+        ;; his later flaps happen in true-flight-dark-fly-a and replay in swoop-again)
+        (fc-flap-begin!)
+        (true-flight-dark-beat)
+        (fc-flap-end!)
         )
-      (let* ((f0-6 (vector-length v1-16))
-             (f1-1 f0-6)
-             (f2-0 (true-flight-flap-speed)) ;; TRUE FLIGHT MOD
-             )
-        (vector+!
-          (-> self control transv)
-          (vector-float*! (-> self control transv) (-> self control dynam gravity-normal) f2-0)
-          (vector-float*! v1-16 v1-16 (/ f0-6 f1-1))
+      (else
+        (let ((v1-16 (new-stack-vector0)))
+          (let ((f0-5 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
+            0.0
+            (vector-! v1-16 (-> self control transv) (vector-float*! v1-16 (-> self control dynam gravity-normal) f0-5))
+            )
+          (let* ((f0-6 (vector-length v1-16))
+                 (f1-1 f0-6)
+                 (f2-0 (true-flight-flap-speed)) ;; TRUE FLIGHT MOD
+                 )
+            (vector+!
+              (-> self control transv)
+              (vector-float*! (-> self control transv) (-> self control dynam gravity-normal) f2-0)
+              (vector-float*! v1-16 v1-16 (/ f0-6 f1-1))
+              )
+            )
           )
         )
       )
-    (true-flight-dark-flap) ;; TRUE FLIGHT: Dark Jak surges forward
     (until (ja-done? 0)
       (suspend)
       (ja :num! (seek!))
@@ -2968,6 +3040,7 @@
              (ja-channel-push! 1 (seconds 0.2))
              (ja-no-eval :group! jakb-lightjak-swoop2-ja :num! (seek! max 2.0) :frame-num (ja-aframe 69.0 0))
              (until (ja-done? 0)
+               (when (not *tf-dark-mode?*) ;; (Dark Jak's speed is Dark Flight's: no damping)
                (let ((v1-37 (new-stack-vector0))
                      (f0-5 (vector-dot (-> self control dynam gravity-normal) (-> self control transv)))
                      )
@@ -2984,6 +3057,7 @@
                      )
                    )
                  )
+                 )
                (suspend)
                (ja :num! (seek! max 2.0))
                )
@@ -2999,23 +3073,24 @@
       (suspend)
       (ja :num! (seek!))
       )
-    (let ((v1-73 (new-stack-vector0)))
-      (let ((f0-20 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
-        0.0
-        (vector-! v1-73 (-> self control transv) (vector-float*! v1-73 (-> self control dynam gravity-normal) f0-20))
-        )
-      (let* ((f0-21 (vector-length v1-73))
-             (f1-5 f0-21)
-             (f2-1 (true-flight-flap-speed)) ;; TRUE FLIGHT MOD
-             )
-        (vector+!
-          (-> self control transv)
-          (vector-float*! (-> self control transv) (-> self control dynam gravity-normal) f2-1)
-          (vector-float*! v1-73 v1-73 (/ f0-21 f1-5))
+    (when (not *tf-dark-mode?*) ;; (Dark Jak's flap already happened when X was pressed)
+      (let ((v1-73 (new-stack-vector0)))
+        (let ((f0-20 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
+          0.0
+          (vector-! v1-73 (-> self control transv) (vector-float*! v1-73 (-> self control dynam gravity-normal) f0-20))
+          )
+        (let* ((f0-21 (vector-length v1-73))
+               (f1-5 f0-21)
+               (f2-1 (true-flight-flap-speed)) ;; TRUE FLIGHT MOD
+               )
+          (vector+!
+            (-> self control transv)
+            (vector-float*! (-> self control transv) (-> self control dynam gravity-normal) f2-1)
+            (vector-float*! v1-73 v1-73 (/ f0-21 f1-5))
+            )
           )
         )
       )
-    (true-flight-dark-flap) ;; TRUE FLIGHT: Dark Jak surges forward
     (until (ja-done? 0)
       (suspend)
       (ja :num! (seek!))
@@ -3040,7 +3115,9 @@
     (set-setting! 'gun #f 0.0 0)
     (set-setting! 'board #f 0.0 0)
     (apply-settings *setting-control*)
-    (set! (-> self control mod-surface) *jump-mods*)
+    (if (not *tf-dark-mode?*) ;; (Dark Jak keeps Dark Flight's surface)
+        (set! (-> self control mod-surface) *jump-mods*)
+        )
     (set! (-> self control unknown-word04) (the-as uint arg0))
     (set-time! (-> self state-time))
     (set! *tf-gliding?* #f) ;; TRUE FLIGHT GLIDE
@@ -3048,17 +3125,29 @@
     )
   :exit (-> target-lightjak-swoop exit)
   :trans (behavior ()
-    (true-flight-lift) ;; TRUE FLIGHT MOD
-    ;; TRUE FLIGHT MOD: vanilla refused the flap when target-height-above-ground < 2m, but high up
-    ;; the ground probe misses and reads 0, so a long fall locked you out of flying. Only refuse
-    ;; when actually standing on something.
-    (if (and (cpad-pressed? (-> self control cpad number) x)
-             (not (logtest? (-> self control status) (collide-status on-surface)))
-             (= (-> self fact shield-level) 0.0)
-             )
-        (go target-lightjak-swoop-again 1.0)
+    (cond
+      (*tf-dark-mode?* ;; Dark Jak: Dark Flight's flight (see true-flight-dark-fly-a)
+        (true-flight-dark-fly-a)
+        (true-flight-lift)
+        (true-flight-dark-fly-b)
+        (if *tf-dark-flapped?* ;; a new flap: replay the flap animation
+            (go target-lightjak-swoop-again 1.0)
+            )
         )
-    (true-flight-glide) ;; TRUE FLIGHT GLIDE
+      (else
+        (true-flight-lift) ;; TRUE FLIGHT MOD
+        ;; TRUE FLIGHT MOD: vanilla refused the flap when target-height-above-ground < 2m, but high up
+        ;; the ground probe misses and reads 0, so a long fall locked you out of flying. Only refuse
+        ;; when actually standing on something.
+        (if (and (cpad-pressed? (-> self control cpad number) x)
+                 (not (logtest? (-> self control status) (collide-status on-surface)))
+                 (= (-> self fact shield-level) 0.0)
+                 )
+            (go target-lightjak-swoop-again 1.0)
+            )
+        (true-flight-glide) ;; TRUE FLIGHT GLIDE
+        )
+      )
     (if (cpad-pressed? (-> self control cpad number) square) ;; TRUE FLIGHT: superhero landing
         (go target-lightjak-slam)
         )
