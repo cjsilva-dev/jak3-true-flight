@@ -6,40 +6,103 @@
 ;; dgos: GAME
 
 (define-extern wings-ragdoll-proc-init-by-other (function ragdoll-proc object :behavior wings-ragdoll-proc))
+(define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
 
-;; TRUE FLIGHT: Dark Jak's wings are unstable dark eco: they shed sparks and crackle with Dark Jak's
-;; lightning. (Their glow color can't be changed: the PC renderer draws the wing texture animation
-;; with fixed colors, whatever the game asks for.)
+;; TRUE FLIGHT: Dark Jak's wings are made of unstable dark eco. Same model as Light Jak's, but on him:
+;; - drawn as a solid surface instead of a glow (pc-solid-base, a PC renderer switch), at an opacity;
+;; - recolored purple: the base texture (the lightjak-wings texture animation's layer colors) and the
+;;   envmap glow on top (the model's envmap tint), both shared with Light Jak, so Light restores them;
+;; - an unstable glow: it drifts, gutters out for a frame now and then and flares on each flap;
+;; - Dark Jak's own crackle running between the feathers, sparks, and a burst on takeoff;
+;; - ragged feathers: uneven lengths, kinks toward the tips, thin spiky tips, a nervous twitch.
+;; All of it is tuned live from the REPL through these globals (Corey picked them by eye, 2026-10-08).
 (define *tf-dark-wing-zap?* #f)     ;; a flap asks for a lightning arc
-(define *tf-dark-wing-zap-chance* 0.02) ;; random arcs per frame
+(define *tf-dark-wing-zap-chance* 0.02) ;; random arcs off the wings per frame
 (define *tf-dark-wing-spark-chance* 0.5) ;; sparks shed per frame
 (define *tf-dark-wing-burst?* #f)   ;; takeoff: the wings burst out (sparks, lightning, pop)
 (define *tf-dark-wing-pop* 1.0)     ;; size overshoot right after the burst, eases back to 1
 
+;; color
+(define *tf-dark-wing-glow* (new 'static 'array int32 3 55 0 90))            ;; envmap glow tint, 0-255 (128 = Light's)
+(define *tf-dark-wing-base* (new 'static 'vector :x 1.5 :y 0.25 :z 2.0 :w 1.0)) ;; base texture color (Light's: 1 1 1)
+(define *tf-dark-wing-alpha* 0.6)   ;; opacity of the solid wing, 0-1
+;; unstable glow
+(define *tf-dark-wing-flicker?* #t)
+(define *tf-dark-wing-k* 1.0)
+(define *tf-dark-wing-dim* 0.55)    ;; brightness drifts between dim and dim + range
+(define *tf-dark-wing-range* 0.45)
+(define *tf-dark-wing-gutter* 0.03) ;; chance per frame the glow nearly goes out
+(define *tf-dark-wing-flare* 0.0)   ;; 1 on a flap, fades out
+(define *tf-dark-wing-flare-seen* (the-as time-frame 0))
+;; crackle between the feathers (Dark Jak's own idle crackle, lightning spec 7)
+(define *tf-dark-wing-arc-chance* 0.25)
+
+(defun tf-wings-colors ((gr int) (gg int) (gb int) (br float) (bg float) (bb float) (geo merc-ctrl))
+  "Set the wing model's envmap glow tint and the wing texture animation's layer colors."
+  (dotimes (i (the int (-> geo header effect-count)))
+    (let ((e (-> geo effect i)))
+      (when (and (logtest? (-> e effect-usage) 1) (-> e extra-info))
+        (let ((ti (the-as mei-envmap-tint (+ (the-as uint (-> e extra-info)) (* (-> e extra-info envmap-tint-offset) 16)))))
+          (set! (-> ti tint) (new 'static 'rgba :r gr :g gg :b gb :a #x80))
+          )
+        )
+      )
+    )
+  (let ((a (-> *default-water-texture-anim-array* array-data 2)))
+    (dotimes (i (the int (-> a num-layers)))
+      (set-vector! (-> a data i start-color) br bg bb 1.0)
+      (set-vector! (-> a data i end-color) br bg bb 1.0)
+      )
+    )
+  (none)
+  )
+
 ;; The wings are 8 feathers (4 a side) of 5 bones each, every feather rooted on bone 3 (roots:
-;; 4 9 14 19 24 29 34 39). On Dark Jak each feather gets its own length -- some cut short, some
-;; long -- and a nervous twitch, so the smooth angel outline turns ragged.
+;; 4 9 14 19 24 29 34 39; the tips are root + 4).
 (define *tf-dark-wings-shape?* #f)  ;; set every frame by the wings process: its parent is Dark Jak
-(define *tf-dark-feather-scale* (new 'static 'array float 8 1.5 0.3 1.1 0.2 1.5 0.3 1.1 0.2))
-(define *tf-dark-feather-twitch* 12.0)     ;; degrees, jerky
+(define *tf-dark-feather-scale* (new 'static 'array float 8 1.7 0.25 1.25 0.15 1.7 0.25 1.25 0.15)) ;; feather lengths
+(define *tf-dark-feather-twitch* 12.0)     ;; degrees, jerky (at the root)
 (define *tf-dark-feather-twitch-chance* 0.4)
+(define *tf-dark-feather-bend* 18.0)       ;; segments from the third on kink back and forth by this, degrees
+(define *tf-dark-feather-bend-from* 2)     ;; (the root and first segment carry the flap: kinking them broke it)
+(define *tf-dark-feather-tip* (new 'static 'vector :x 0.45 :y 1.7 :z 0.45 :w 1.0)) ;; last segment: a thin spike
 
 (defun tf-dark-feather-joint ((node cspace) (tq transformq))
   (when *tf-dark-wings-shape?*
-    (let* ((chain (/ (- (-> node joint-num) 4) 5))
-           (k (* *tf-dark-wing-pop* (if (and (>= chain 0) (< chain 8)) (-> *tf-dark-feather-scale* chain) 1.0)))
+    (let* ((j (- (-> node joint-num) 4))
+           (chain (/ j 5))
+           (seg (- j (* chain 5)))
            )
-      (vector-float*! (-> tq scale) (-> tq scale) k)
-      (set! (-> tq scale w) 1.0)
-      (when (rand-vu-percent? *tf-dark-feather-twitch-chance*)
-        (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion)
-                                         (rand-vu-float-range -1.0 1.0) (rand-vu-float-range -1.0 1.0) 0.5
-                                         (degrees (rand-vu-float-range (- *tf-dark-feather-twitch*) *tf-dark-feather-twitch*))
-                                         )
+      (cond
+        ((zero? seg) ;; feather root: its own length, and a nervous twitch
+         (let ((k (* *tf-dark-wing-pop* (if (and (>= chain 0) (< chain 8)) (-> *tf-dark-feather-scale* chain) 1.0))))
+           (vector-float*! (-> tq scale) (-> tq scale) k)
+           (set! (-> tq scale w) 1.0)
+           )
+         (when (rand-vu-percent? *tf-dark-feather-twitch-chance*)
+           (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion)
+                                            (rand-vu-float-range -1.0 1.0) (rand-vu-float-range -1.0 1.0) 0.5
+                                            (degrees (rand-vu-float-range (- *tf-dark-feather-twitch*) *tf-dark-feather-twitch*))
+                                            )
+                    )
                  )
+             (quaternion-normalize! r)
+             (quaternion*! (-> tq quat) r (-> tq quat))
+             )
+           )
+         )
+        (else ;; further out: kinked back and forth, the tip a thin spike
+          (when (>= seg *tf-dark-feather-bend-from*)
+            (let ((r (quaternion-axis-angle! (new 'stack-no-clear 'quaternion) 0.0 1.0 0.0
+                                             (degrees (* *tf-dark-feather-bend* (if (odd? (+ seg chain)) 1.0 -1.0))))))
+              (quaternion*! (-> tq quat) r (-> tq quat))
               )
-          (quaternion-normalize! r)
-          (quaternion*! (-> tq quat) r (-> tq quat))
+            )
+          (when (= seg 4)
+            (set! (-> tq scale x) (* (-> tq scale x) (-> *tf-dark-feather-tip* x)))
+            (set! (-> tq scale y) (* (-> tq scale y) (-> *tf-dark-feather-tip* y)))
+            (set! (-> tq scale z) (* (-> tq scale z) (-> *tf-dark-feather-tip* z)))
+            )
           )
         )
       )
@@ -49,12 +112,12 @@
   )
 
 (defbehavior tf-dark-feathers-hook wings ()
-  "Put the feather callback on the 8 feather roots (only where nothing else -- the wing physics --
-   has its own callback; that one calls ours in turn)."
-  (dotimes (c 8)
-    (let ((n (+ 4 (* c 5))))
-      (when (< n (-> self node-list length))
-        (let ((node (-> self node-list data n)))
+  "Put the feather callback on all 40 feather bones (only where nothing else -- the wing physics --
+   has its own callback)."
+  (dotimes (n 40)
+    (let ((i (+ 4 n)))
+      (when (< i (-> self node-list length))
+        (let ((node (-> self node-list data i)))
           (if (not (-> node param0))
               (set! (-> node param0) tf-dark-feather-joint)
               )
@@ -66,11 +129,40 @@
   )
 
 (defbehavior tf-dark-wings-fx wings ()
-  "Per frame on Dark Jak: ragged feathers, sparks and lightning."
+  "Per frame on Dark Jak: the dark color and its flicker, ragged feathers, sparks and lightning."
   (set! *tf-dark-wings-shape?* #t)
   (tf-dark-feathers-hook)
   (set! *tf-dark-wing-pop* (fmax 1.0 (- *tf-dark-wing-pop* (* 2.0 (seconds-per-frame)))))
-  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
+  ;; the unstable glow: drift toward a random brightness, gutter now and then, flare on a flap
+  (cond
+    (*tf-dark-wing-flicker?*
+      (set! *tf-dark-wing-k* (lerp *tf-dark-wing-k* (+ *tf-dark-wing-dim* (* *tf-dark-wing-range* (rand-vu))) 0.3))
+      (when (> *fc-l1-time* *tf-dark-wing-flare-seen*)
+        (set! *tf-dark-wing-flare-seen* *fc-l1-time*)
+        (set! *tf-dark-wing-flare* 1.0)
+        )
+      (set! *tf-dark-wing-flare* (fmax 0.0 (- *tf-dark-wing-flare* (* 3.0 (seconds-per-frame)))))
+      )
+    (else
+      (set! *tf-dark-wing-k* 1.0)
+      (set! *tf-dark-wing-flare* 0.0)
+      )
+    )
+  (let ((k (if (and *tf-dark-wing-flicker?* (rand-vu-percent? *tf-dark-wing-gutter*))
+               0.25
+               (+ *tf-dark-wing-k* (* 0.8 *tf-dark-wing-flare*))
+               )
+           )
+        )
+    (tf-wings-colors (min 255 (the int (* k (-> *tf-dark-wing-glow* 0))))
+                     (min 255 (the int (* k (-> *tf-dark-wing-glow* 1))))
+                     (min 255 (the int (* k (-> *tf-dark-wing-glow* 2))))
+                     (* k (-> *tf-dark-wing-base* x)) (* k (-> *tf-dark-wing-base* y)) (* k (-> *tf-dark-wing-base* z))
+                     (-> self draw lod-set lod 0 geo)
+                     )
+    )
+  ;; the solid wing's opacity rides on the light color's alpha (vertex alpha = rgba x light alpha)
+  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 *tf-dark-wing-alpha*)
   (when (and (not (logtest? (-> self draw status) (draw-control-status no-draw no-draw-temp)))
              (not (movie?))
              (nonzero? (-> self skel active-channels))
@@ -100,6 +192,19 @@
         0
         0
         40960.0
+        )
+      )
+    ;; Dark Jak's crackle, running from a bone of one feather to a bone of the next (it follows the flap)
+    (when (rand-vu-percent? *tf-dark-wing-arc-chance*)
+      (let* ((c (rand-vu-int-range 0 6))
+             (c2 (if (= c 3) 2 (+ c 1)))
+             (j1 (+ 4 (* c 5) (rand-vu-int-range 1 4)))
+             (j2 (+ 4 (* c2 5) (rand-vu-int-range 1 4)))
+             )
+        (when (and (< j1 (-> self node-list length)) (< j2 (-> self node-list length)))
+          (process-spawn lightning-tracker :init lightning-tracker-init (-> *lightning-spec-id-table* 7) 0
+                         lightning-probe-callback self (the-as vector j1) (the-as vector j2) :name "lightning-tracker" :to self)
+          )
         )
       )
     )
@@ -506,6 +611,7 @@
         (begin
           (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
           (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
+          (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
           (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
           )
         )
