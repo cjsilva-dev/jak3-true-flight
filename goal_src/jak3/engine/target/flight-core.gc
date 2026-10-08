@@ -109,3 +109,32 @@
     (update-transforms (-> self control))
     )
   )
+
+(defbehavior fc-slam-plunge-start target ()
+  "Superhero landing, first frame: keep a share of the horizontal speed and dive at least *fc-slam-speed*."
+  (let* ((up (-> self control dynam gravity-normal))
+         (vs (vector-dot up (-> self control transv)))
+         (hv (vector-! (new-stack-vector0) (-> self control transv) (vector-float*! (new-stack-vector0) up vs)))
+         )
+    (vector-float*! hv hv *fc-slam-keep-xz*)
+    (vector+float*! (-> self control transv) hv up (fmin vs (- *fc-slam-speed*)))
+    )
+  )
+
+(defbehavior fc-slam-plunge-step target ()
+  "Superhero landing, each frame of the dive: accelerate down (harder while Square is held) up to the
+   terminal speed. Returns the plunge speed (the impact strength if he lands this frame)."
+  (let* ((up (-> self control dynam gravity-normal))
+         (vs (vector-dot up (-> self control transv)))
+         (boost? (cpad-hold? (-> self control cpad number) square))
+         (want (fmax (- (if boost? *fc-slam-boost-max* *fc-slam-max*))
+                     (- (fmin vs (- *fc-slam-speed*))
+                        (* (if boost? *fc-slam-boost-accel* *fc-slam-accel*) (seconds-per-frame))
+                        )
+                     )
+               )
+         )
+    (vector+float*! (-> self control transv) (-> self control transv) up (- want vs))
+    (- want)
+    )
+  )

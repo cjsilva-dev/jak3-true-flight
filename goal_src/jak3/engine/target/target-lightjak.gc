@@ -3190,13 +3190,7 @@
             )
       )
     ;; straight down, fast, keeping a little of the forward speed
-    (let* ((up (-> self control dynam gravity-normal))
-           (vs (vector-dot up (-> self control transv)))
-           (hv (vector-! (new-stack-vector0) (-> self control transv) (vector-float*! (new-stack-vector0) up vs)))
-           )
-      (vector-float*! hv hv *fc-slam-keep-xz*)
-      (vector+float*! (-> self control transv) hv up (fmin vs (- *fc-slam-speed*)))
-      )
+    (fc-slam-plunge-start)
     )
   :exit (behavior ()
     (set! (-> self control dynam gravity-max) (-> self control standard-dynamics gravity-max))
@@ -3247,19 +3241,7 @@
     (set! *tf-slam-braced?* #f)
     (until (logtest? (-> self control status) (collide-status on-surface))
       ;; accelerate the plunge: the longer the drop, the harder the hit
-      (let* ((up (-> self control dynam gravity-normal))
-             (vs (vector-dot up (-> self control transv)))
-             (boost? (cpad-hold? (-> self control cpad number) square)) ;; hold Square = faster
-             (want (fmax (- (if boost? *fc-slam-boost-max* *fc-slam-max*))
-                         (- (fmin vs (- *fc-slam-speed*))
-                            (* (if boost? *fc-slam-boost-accel* *fc-slam-accel*) (seconds-per-frame))
-                            )
-                         )
-                   )
-             )
-        (vector+float*! (-> self control transv) (-> self control transv) up (- want vs))
-        (set! *tf-slam-impact* (- want))
-        )
+      (set! *tf-slam-impact* (fc-slam-plunge-step)) ;; hold Square = faster
       ;; dark slam: once the dark set is back, dive in the dark bomb's plunge pose
       (when (and *tf-dark-slam?* (not *tf-dark-slam-diving?*) (not *tf-slam-braced?*)
                  (= (-> self ext-anim) (target-anim dark))
