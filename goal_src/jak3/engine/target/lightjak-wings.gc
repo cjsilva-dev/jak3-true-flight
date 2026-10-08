@@ -499,8 +499,12 @@
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
     ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco
     (if (focus-test? (the-as process-focusable v1-0) dark)
-        (tf-dark-wings-fx)
         (begin
+          (logior! (-> self draw global-effect) (draw-control-global-effect pc-solid-base)) ;; solid, not a glow
+          (tf-dark-wings-fx)
+          )
+        (begin
+          (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
           (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
           (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
           )
