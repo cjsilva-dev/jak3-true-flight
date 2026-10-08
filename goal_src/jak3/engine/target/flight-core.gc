@@ -150,7 +150,7 @@
 
 ;; flap and glide state
 (define *fc-l1-time* (the-as time-frame 0))
-(define *fc-flap-from-glide?* #f) ;; set per tap in dark-flight-air
+(define *fc-flap-from-glide?* #f) ;; set per flap (fc-flap-begin!)
 (define *fc-flap-holding?* #f)
 (define *fc-flap-hold-given* 0.0)
 (define *fc-gliding?* #f)
@@ -463,7 +463,7 @@
 
 (defbehavior fc-dash-glide-bump target ()
   "A dash while gliding: the glide carries its own speed, so give it the lunge (it bleeds off as momentum)."
-  (if *fc-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
+  (if *fc-gliding?*
       (set! *fc-glide-speed* (fmax *fc-glide-speed* (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
       )
   (none)
@@ -514,5 +514,18 @@
      )
     )
   (cspace<-parented-transformq-joint! node tq)
+  (none)
+  )
+
+(defbehavior fc-dark-hunch-hook target ()
+  "While Dark Jak flies (*fc-hunching?*): hook the hunch onto his chest bone, every frame (a bone keeps
+   whatever function it was given). A flight cut short by a death or a load kills the hook with the
+   process, so a hook that isn't there means any angle left over is stale: start from upright."
+  (when *fc-hunching?*
+    (if (!= (-> self node-list data 6 param0) fc-dark-chest-joint)
+        (set! *fc-dark-hunch-now* 0.0)
+        )
+    (set! (-> self node-list data 6 param0) fc-dark-chest-joint)
+    )
   (none)
   )
