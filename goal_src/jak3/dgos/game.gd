@@ -335,6 +335,7 @@
   "flight-stream-h.o"
   "flight-map.o"
   "flight-stream.o"
+  "flight-core.o"
   "target-lightjak.o"
   "target-invisible.o"
   "target-launch.o"

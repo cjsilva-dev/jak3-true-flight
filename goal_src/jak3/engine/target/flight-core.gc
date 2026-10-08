@@ -1,0 +1,66 @@
+;;-*-Lisp-*-
+(in-package goal)
+
+;; name: flight-core.gc
+;; name in dgo: flight-core
+;; dgos: GAME
+
+;; FLIGHT CORE -- shared between Dark Flight (Jak 2) and True Flight (Jak 3).
+;; This file is byte-identical in both repos (like flight-stream.gc): the flight tuning both games
+;; agree on lives here once, so a change to it is a change to both. Values that differ per game
+;; (Light Jak in Jak 3, city ceilings, poses, surfaces) stay in each game's flight file.
+;; Tuning values are globals so they can be changed live from the REPL.
+
+;; ---- Dark Jak's flight (the same in both games; Light Jak's own values stay in True Flight) ----
+(define *fc-dark-flap-impulse*        (meters 17))        ;; per flap (Light: 12)
+(define *fc-dark-climb-cap*           (meters 24))        ;; (Light: 20)
+(define *fc-dark-flap-surge*          (meters 10))        ;; forward throw per flap
+(define *fc-dark-flap-cooldown*       (seconds 0.5))      ;; between flaps (Light: 0.35)
+(define *fc-dark-gravity*             110592.0)           ;; ~27 m/s^2 between flaps (Light: 20)
+(define *fc-dark-glide-sink*          (meters 5))         ;; glide descent, m/s (Light: 3)
+(define *fc-dark-glide-cruise*        (meters 22))        ;; (Light: 18)
+
+;; ---- Flapping ----
+(define *fc-flap-hold-bonus*          (meters 10))        ;; most extra climb a fully held flap adds, m/s
+(define *fc-flap-hold-accel*          (meters 25))        ;; how fast holding adds it (10/25 = 0.4 s)
+(define *fc-big-flap-impulse*         (meters 28))        ;; flap out of a glide
+(define *fc-big-flap-cap*             (meters 35))        ;; and its fastest climb
+(defconstant FC-GRAVITY-MAX           163840.0)           ;; fastest fall while flying (the engine clamps falls to this)
+
+;; ---- Gliding and the glide turbo ----
+(define *fc-glide-max*                (meters 45))        ;; top speed without turbo
+(define *fc-glide-accel*              (meters 10))        ;; build-up toward cruise, m/s^2
+(define *fc-glide-turbo-accel-city*   (meters 25))        ;; glide turbo in the city: slower so Haven stays
+(define *fc-glide-turbo-max-city*     (meters 50))        ;; navigable
+(define *fc-glide-turbo-accel-open*   (meters 40))        ;; ... and outside it
+(define *fc-glide-turbo-max-open*     (meters 90))
+(define *fc-glide-turbo-sink*         (meters 1))         ;; turbo flies nearly level
+(define *fc-glide-convert*            0.8)                ;; share of shed fall speed that becomes forward speed
+(define *fc-glide-catch*              (meters 30))        ;; how hard a steep fall levels out, m/s^2
+(define *fc-glide-drag*               0.25)               ;; per-second pull of excess speed back to cruise
+(define *fc-glide-gravity*            49152.0)            ;; 12 m/s^2 while gliding
+
+;; ---- Dash (R1 tap) ----
+(define *fc-dash-speed*               (meters 55))        ;; R1 dash: lunge speed
+(define *fc-dash-city-speed*          (meters 45))        ;; in the city (for handling; the districts stream fast enough for more)
+(define *fc-dash-time*                (seconds 0.3))      ;; how long the lunge lasts
+(define *fc-dash-cooldown*            (seconds 0.6))
+(define *fc-dash-hit-scale*           0.07)               ;; hit sphere, as a share of the dark bomb's size
+
+;; ---- Superhero landing (Square) ----
+(define *fc-slam-speed*               (meters 20))        ;; plunge starts at least this fast, m/s
+(define *fc-slam-accel*               (meters 60))        ;; and accelerates (so height = momentum), m/s^2
+(define *fc-slam-max*                 (meters 60))        ;; terminal plunge speed
+(define *fc-slam-boost-accel*         (meters 120))       ;; while Square is held
+(define *fc-slam-boost-max*           (meters 100))
+(define *fc-slam-keep-xz*             0.25)               ;; share of horizontal speed kept into the plunge
+(define *fc-slam-blast-min*           0.6)                ;; blast radius vs a normal dark bomb, for a short drop
+(define *fc-slam-blast-max*           1.5)                ;; ... and for a slam from way up
+
+;; ---- City flight and the rest ----
+(define *fc-city-soft*                (meters 6))         ;; climbing fades out over this band below the ceiling
+(define *fc-region-ahead*             1.0)                ;; seconds of flight the region triggers see ahead...
+(define *fc-region-ahead-max*         (meters 30))        ;; ...capped (it moves every region's trigger point)
+(define *fc-hit-stagger*              18)                 ;; frames of in-air flinch before flying on (~0.3 s)
+(define *fc-launch-time*              (seconds 0.6))      ;; a flap mid-glide shows the flap pose this long
+(define *fc-pitch-step*               8.0)                ;; degrees per frame toward the target
