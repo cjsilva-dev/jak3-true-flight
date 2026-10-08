@@ -10,6 +10,11 @@
 (define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
 
 ;; TRUE FLIGHT: Dark Jak's wings are made of unstable dark eco. Same model as Light Jak's, but on him:
+;; - two styles, switched with R3 while flying (as Dark Flight's wing switch):
+;;   'smoke (default): smoked glass -- drawn with normal blending instead of a glow (pc-solid-base, a PC
+;;     renderer switch) at *tf-dark-wing-alpha* opacity, the dark membrane cut away (*pc-merc-solid-cut*)
+;;     so the outline follows the jagged feathers;
+;;   'glow: Light Jak's see-through glow, in dark-eco purple;
 ;; - recolored purple: the base texture (the lightjak-wings texture animation's layer colors) and the
 ;;   envmap glow on top (the model's envmap tint), both shared with Light Jak, so Light restores them;
 ;; - an unstable glow: it drifts, gutters out for a frame now and then and flares on each flap;
@@ -23,8 +28,15 @@
 (define *tf-dark-wing-pop* 1.0)     ;; size overshoot right after the burst, eases back to 1
 
 ;; color
-(define *tf-dark-wing-glow* (new 'static 'array int32 3 55 0 90))            ;; envmap glow tint, 0-255 (128 = Light's)
-(define *tf-dark-wing-base* (new 'static 'vector :x 1.5 :y 0.25 :z 2.0 :w 1.0)) ;; base texture color (Light's: 1 1 1)
+(define *tf-dark-wing-style* 'smoke) ;; 'smoke or 'glow (R3 while flying)
+;; smoked glass
+(define *tf-dark-wing-glow* (new 'static 'array int32 3 230 0 10))            ;; envmap glow tint, 0-255 (128 = Light's)
+(define *tf-dark-wing-base* (new 'static 'vector :x 1.0 :y 0.0 :z 0.2 :w 1.0)) ;; base texture color (Light's: 1 1 1)
+(define *tf-dark-wing-alpha* 0.62)  ;; opacity, 0-1 (vertex alpha x the light color's alpha; below ~0.55 it vanishes)
+(define *tf-dark-wing-cut* 20)      ;; membrane texels darker than this (0-255) are cut away: the jagged outline
+;; glow (see-through, Light Jak's way of drawing, in purple)
+(define *tf-dark-wing-glow2* (new 'static 'array int32 3 85 0 125))
+(define *tf-dark-wing-base2* (new 'static 'vector :x 1.4 :y 0.0 :z 1.8 :w 1.0))
 ;; unstable glow
 (define *tf-dark-wing-flicker?* #t)
 (define *tf-dark-wing-k* 1.0)
@@ -147,20 +159,34 @@
       (set! *tf-dark-wing-flare* 0.0)
       )
     )
-  (let ((k (if (and *tf-dark-wing-flicker?* (rand-vu-percent? *tf-dark-wing-gutter*))
-               0.25
-               (+ *tf-dark-wing-k* (* 0.8 *tf-dark-wing-flare*))
-               )
-           )
-        )
-    (tf-wings-colors (min 255 (the int (* k (-> *tf-dark-wing-glow* 0))))
-                     (min 255 (the int (* k (-> *tf-dark-wing-glow* 1))))
-                     (min 255 (the int (* k (-> *tf-dark-wing-glow* 2))))
-                     (* k (-> *tf-dark-wing-base* x)) (* k (-> *tf-dark-wing-base* y)) (* k (-> *tf-dark-wing-base* z))
-                     (-> self draw lod-set lod 0 geo)
-                     )
+  ;; R3: switch the wing style (with a burst so the switch shows)
+  (when (cpad-pressed? 0 r3)
+    (set! *tf-dark-wing-style* (if (= *tf-dark-wing-style* 'smoke) 'glow 'smoke))
+    (set! *tf-dark-wing-burst?* #t)
     )
-  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
+  (let ((smoke? (= *tf-dark-wing-style* 'smoke)))
+    (if smoke?
+        (logior! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
+        (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
+        )
+    (set! *pc-merc-solid-cut* *tf-dark-wing-cut*)
+    (let ((g (if smoke? *tf-dark-wing-glow* *tf-dark-wing-glow2*))
+          (b (if smoke? *tf-dark-wing-base* *tf-dark-wing-base2*))
+          (k (if (and *tf-dark-wing-flicker?* (rand-vu-percent? *tf-dark-wing-gutter*))
+                 0.25
+                 (+ *tf-dark-wing-k* (* 0.8 *tf-dark-wing-flare*))
+                 )
+             )
+          )
+      (tf-wings-colors (min 255 (the int (* k (-> g 0))))
+                       (min 255 (the int (* k (-> g 1))))
+                       (min 255 (the int (* k (-> g 2))))
+                       (* k (-> b x)) (* k (-> b y)) (* k (-> b z))
+                       (-> self draw lod-set lod 0 geo)
+                       )
+      )
+    (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 (if smoke? *tf-dark-wing-alpha* 1.0)) ;; the opacity
+    )
   (when (and (not (logtest? (-> self draw status) (draw-control-status no-draw no-draw-temp)))
              (not (movie?))
              (nonzero? (-> self skel active-channels))
@@ -602,8 +628,9 @@
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
     ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco
     (if (focus-test? (the-as process-focusable v1-0) dark)
-        (tf-dark-wings-fx)
+        (tf-dark-wings-fx) ;; (sets its own drawing style: smoked glass or glow)
         (begin
+          (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
           (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
           (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
           (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)

@@ -529,6 +529,7 @@ void Merc2::handle_pc_model(const DmaTransfer& setup,
     u64 ignore_alpha_mask;
     u8 effect_count;
     u8 bitflags;
+    u8 solid_cut;  // True Flight: with the solid-base bit, cut texels darker than this (0-255)
   };
   auto* flags = (const PcMercFlags*)input_data;
   int num_effects = flags->effect_count;  // mostly just a sanity check
@@ -540,6 +541,8 @@ void Merc2::handle_pc_model(const DmaTransfer& setup,
   bool model_uses_pc_blerc = flags->bitflags & 4;
   bool model_disables_envmap = flags->bitflags & 8;
   bool model_no_texture = flags->bitflags & 16;
+  bool model_solid_base = flags->bitflags & 32;  // True Flight: base pass drawn solid (Dark Jak's wings)
+  u8 model_solid_cut = model_solid_base ? flags->solid_cut : 0;
   input_data += 32;
 
   float blerc_weights[kMaxBlerc];
@@ -630,6 +633,8 @@ void Merc2::handle_pc_model(const DmaTransfer& setup,
   args.lights = lights;
   args.first_bone = first_bone;
   args.no_texture = render_state->version == GameVersion::Jak3 && model_no_texture;
+  args.solid_base = model_solid_base;
+  args.solid_cut = model_solid_cut;
 
   // loop over effects, creating draws for each
   for (size_t ei = 0; ei < model->effects.size(); ei++) {
@@ -749,6 +754,7 @@ void Merc2::init_shader_common(Shader& shader, Uniforms* uniforms, bool include_
   uniforms->fog_color = glGetUniformLocation(id, "fog_color");
   uniforms->perspective_matrix = glGetUniformLocation(id, "perspective_matrix");
   uniforms->ignore_alpha = glGetUniformLocation(id, "ignore_alpha");
+  uniforms->solid_cut = glGetUniformLocation(id, "solid_cut");  // (-1 in emerc: no-op)
 
   uniforms->gfx_hack_no_tex = glGetUniformLocation(id, "gfx_hack_no_tex");
 }
@@ -1070,6 +1076,7 @@ Merc2::Draw* Merc2::try_alloc_envmap_draw(const tfrag3::MercDraw& mdraw,
   draw->index_count = mdraw.index_count;
   draw->mode = envmap_mode;
   draw->hash = 0;
+  draw->solid_cut = 0;
   if (args.jak1_water_mode) {
     draw->mode.enable_ab();
     draw->mode.disable_depth_write();
@@ -1095,6 +1102,15 @@ Merc2::Draw* Merc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw, const DrawA
   if (args.jak1_water_mode) {
     draw->mode.set_ab(true);
     draw->mode.disable_depth_write();
+  }
+  draw->solid_cut = args.solid_cut;
+  if (args.solid_base) {
+    // True Flight: an additive glow model drawn as a solid surface (normal blending, depth write).
+    // Only the base pass: envmap draws keep their own mode (try_alloc_envmap_draw).
+    draw->mode.set_ab(true);
+    draw->mode.set_alpha_blend(DrawMode::AlphaBlend::SRC_DST_SRC_DST);
+    draw->mode.enable_depth_write();
+    draw->mode.set_at(false);
   }
 
   if (args.disable_fog) {
@@ -1243,6 +1259,7 @@ void Merc2::do_draws(const Draw* draw_array,
       }
     }
     glUniform1i(uniforms.ignore_alpha, draw.flags & DrawFlags::IGNORE_ALPHA);
+    glUniform1f(uniforms.solid_cut, draw.solid_cut / 255.f);
 
     if (fog_on && !draw.mode.get_fog_enable()) {
       // on -> off

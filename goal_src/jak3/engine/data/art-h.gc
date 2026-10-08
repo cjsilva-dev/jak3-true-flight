@@ -37,7 +37,7 @@
   :type uint8
   :bitfield #t
   (bit-0)
-  (bit-1)
+  (pc-solid-base) ;; PC: draw the model's base (non-envmap) pass with normal blending + depth write (True Flight's Dark wings)
   (title-light)
   (disable-envmap)
   (rim-lights)

@@ -9,6 +9,7 @@ uniform sampler2D tex_T0;
 
 uniform vec4 fog_color;
 uniform int ignore_alpha;
+uniform float solid_cut;  // True Flight: discard texels darker than this (0 = off)
 uniform vec4 light_dir0_fade;
 uniform vec4 light_dir1_fade_en;
 
@@ -19,6 +20,9 @@ uniform int gfx_hack_no_tex;
 void main() {
   if (gfx_hack_no_tex == 0) {
     vec4 T0 = texture(tex_T0, vtx_st);
+    if (solid_cut > 0 && max(T0.r, max(T0.g, T0.b)) < solid_cut) {
+      discard;  // cut the dark membrane away, leaving the bright feathers (jagged outline)
+    }
     // all merc is tcc=rgba and modulate
     if (decal_enable == 0) {
       color = vtx_color * T0 * 2;

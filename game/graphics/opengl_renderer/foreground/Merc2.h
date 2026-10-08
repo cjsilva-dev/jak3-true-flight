@@ -130,6 +130,7 @@ class Merc2 {
     GLuint perspective_matrix;
 
     GLuint ignore_alpha;
+    GLuint solid_cut;
     GLuint decal;
 
     GLuint gfx_hack_no_tex;
@@ -193,6 +194,7 @@ class Merc2 {
     u8 fade[4];
     // no strip hack for custom models
     u8 no_strip;
+    u8 solid_cut;  // True Flight: discard where the texture is darker than this (0-255, 0 = off)
     u64 hash;
   };
 
@@ -217,6 +219,8 @@ class Merc2 {
     bool ignore_alpha;
     bool disable_fog;
     bool no_texture;
+    bool solid_base;  // True Flight: draw the base pass solid
+    u8 solid_cut;     // ... cutting away texels darker than this (0 = off)
     u64 hash;
     u32 lights;
     u32 first_bone;
