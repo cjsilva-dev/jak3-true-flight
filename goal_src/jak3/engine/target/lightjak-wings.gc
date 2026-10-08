@@ -71,12 +71,12 @@
 ;; The wings are 8 feathers (4 a side) of 5 bones each, every feather rooted on bone 3 (roots:
 ;; 4 9 14 19 24 29 34 39; the tips are root + 4).
 (define *tf-dark-wings-shape?* #f)  ;; set every frame by the wings process: its parent is Dark Jak
-(define *tf-dark-feather-scale* (new 'static 'array float 8 1.7 0.25 1.25 0.15 1.7 0.25 1.25 0.15)) ;; feather lengths
-(define *tf-dark-feather-twitch* 12.0)     ;; degrees, jerky (at the root)
+(define *tf-dark-feather-scale* (new 'static 'array float 8 1.9 0.2 1.35 0.12 1.9 0.2 1.35 0.12)) ;; feather lengths
+(define *tf-dark-feather-twitch* 16.0)     ;; degrees, jerky (at the root)
 (define *tf-dark-feather-twitch-chance* 0.4)
-(define *tf-dark-feather-bend* 18.0)       ;; segments from the third on kink back and forth by this, degrees
+(define *tf-dark-feather-bend* 28.0)       ;; segments from the third on kink back and forth by this, degrees
 (define *tf-dark-feather-bend-from* 2)     ;; (the root and first segment carry the flap: kinking them broke it)
-(define *tf-dark-feather-tip* (new 'static 'vector :x 0.45 :y 1.7 :z 0.45 :w 1.0)) ;; last segment: a thin spike
+(define *tf-dark-feather-tip* (new 'static 'vector :x 0.3 :y 2.1 :z 0.3 :w 1.0)) ;; last segment: a thin spike
 
 (defun tf-dark-feather-joint ((node cspace) (tq transformq))
   (when *tf-dark-wings-shape?*
