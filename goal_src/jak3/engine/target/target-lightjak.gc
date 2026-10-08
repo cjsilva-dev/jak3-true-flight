@@ -2295,7 +2295,7 @@
   )
 
 (define-extern *tf-gliding?* symbol)   ;; (glide state, defined further down)
-(define-extern *tf-in-city?* symbol)   ;; (city mode, defined further down)
+(define-extern *fc-in-city?* symbol)   ;; (city mode, defined further down)
 (define-extern *tf-glide-speed* float)
 (define *tf-dark-dash-start*    (the-as time-frame 0))
 (define *tf-dark-dashing?*      #f)
@@ -2358,14 +2358,14 @@
         )
       )
     (if *tf-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
-        (set! *tf-glide-speed* (fmax *tf-glide-speed* (if *tf-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
+        (set! *tf-glide-speed* (fmax *tf-glide-speed* (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
         )
     )
   (when *tf-dark-dashing?*
     (when (not *tf-gliding?*)
       (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
         (set! (-> fwd y) 0.0)
-        (vector-normalize! fwd (if *tf-in-city?* *fc-dash-city-speed* *fc-dash-speed*))
+        (vector-normalize! fwd (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*))
         (set! (-> self control transv x) (-> fwd x))
         (set! (-> self control transv z) (-> fwd z))
         (set! (-> self control transv y) (fmax 0.0 (-> self control transv y))) ;; a level lunge
@@ -2446,8 +2446,6 @@
 (define *tf-ceil-slumc*     (meters 55))
 (define *tf-ceil-indb*      (meters 52))
 (define *tf-ceil-default*   (meters 40))  ;; sluma, slumb, inda and the rest of the city
-(define *tf-city-ceiling*   (meters 0))   ;; this frame's ceiling (set from the above)
-(define *tf-in-city?* #f)
 
 ;; Load by location: twice a second while flying in the city, load the district you're heading for.
 ;; Districts are walled off and loaded by trigger regions at the gates, which flying over the walls
@@ -2462,7 +2460,7 @@
 
 (defbehavior true-flight-city target ()
   "Per frame while flying: city detection, district streaming, altitude ceiling."
-  (set! *tf-in-city?* (if (and (-> self current-level)
+  (set! *fc-in-city?* (if (and (-> self current-level)
                                (string-prefix= "cty" (symbol->string (-> self current-level name)))
                                )
                           #t
@@ -2470,11 +2468,11 @@
                           )
         )
   (fs-tick)
-  (when *tf-in-city?*
+  (when *fc-in-city?*
     ;; the ceiling of the district Jak is actually over (current-level lags far behind in flight;
     ;; the streamer's continue-point lookup is current)
     (let ((nm (symbol->string (if (and *fs-stream-now* (member *fs-stream-now* *tf-city-districts*)) *fs-stream-now* (-> self current-level name)))))
-      (set! *tf-city-ceiling* (cond
+      (set! *fc-city-ceiling* (cond
                                 ((string-prefix= "ctyport" nm) *tf-ceil-port*)
                                 ((string-prefix= "ctygen" nm) *tf-ceil-gen*)
                                 ((string-prefix= "ctyslumc" nm) *tf-ceil-slumc*)
@@ -2485,7 +2483,7 @@
       )
     )
   (cond
-    (*tf-in-city?*
+    (*fc-in-city?*
       (let ((v (vector-float*! (new-stack-vector0) (-> self control transv) *fc-region-ahead*)))
         (set! (-> v y) 0.0)
         (set! (-> v w) 0.0)
@@ -2494,15 +2492,15 @@
             )
         (vector-copy! *tf-region-lookahead* v)
         )
-      (when (< 0.0 *tf-city-ceiling*)
-        (let ((above (- (-> self control trans y) (- *tf-city-ceiling* *fc-city-soft*)))
+      (when (< 0.0 *fc-city-ceiling*)
+        (let ((above (- (-> self control trans y) (- *fc-city-ceiling* *fc-city-soft*)))
               (vs (-> self control transv y))
               )
           (when (and (< 0.0 above) (< 0.0 vs))
             ;; fade the climb to nothing at the ceiling
             (set! (-> self control transv y) (* vs (fmax 0.0 (- 1.0 (/ above *fc-city-soft*)))))
             )
-          (let ((over (- (-> self control trans y) *tf-city-ceiling*)))
+          (let ((over (- (-> self control trans y) *fc-city-ceiling*)))
             (if (< 0.0 over) ;; above it (a big flap overshot, or a lower district crossed at height): ease down, never slam
                 (set! (-> self control transv y) (fmin (-> self control transv y) (fmax (meters -12) (* -2.0 over))))
                 )
@@ -2535,8 +2533,8 @@
              )
           )
       ;; city ceiling: no flap climbs faster than 2 m/s per metre of room left
-      (if (and *tf-in-city?* (< 0.0 *tf-city-ceiling*))
-          (fmin f (fmax 0.0 (* 2.0 (- *tf-city-ceiling* (-> self control trans y)))))
+      (if (and *fc-in-city?* (< 0.0 *fc-city-ceiling*))
+          (fmin f (fmax 0.0 (* 2.0 (- *fc-city-ceiling* (-> self control trans y)))))
           f
           )
       )
@@ -2603,7 +2601,7 @@
                 )
             (cond
               (*tf-dark-dashing?* *tf-dark-dash-mods*)
-              (*tf-in-city?* *lightjak-swoop-city-fast-mods*)
+              (*fc-in-city?* *lightjak-swoop-city-fast-mods*)
               (else *lightjak-swoop-fast-mods*)
               )
             (if *tf-dark-mode?* *tf-dark-swoop-mods* *lightjak-swoop-mods*)
@@ -2750,7 +2748,7 @@
           )
         (cond
           (diving?
-            (set! *tf-glide-speed* (+ *tf-glide-speed* (* (if *tf-in-city?* *fc-glide-turbo-accel-city* *fc-glide-turbo-accel-open*) dt)))
+            (set! *tf-glide-speed* (+ *tf-glide-speed* (* (if *fc-in-city?* *fc-glide-turbo-accel-city* *fc-glide-turbo-accel-open*) dt)))
             )
           ((< *tf-glide-speed* cruise)
            (set! *tf-glide-speed* (fmin cruise (+ *tf-glide-speed* (* *fc-glide-accel* dt))))
@@ -2765,7 +2763,7 @@
         ;; above it (after a turbo) is kept and bleeds off through the drag above -- momentum
         (set! *tf-glide-speed*
               (if diving?
-                  (fmin (if *tf-in-city?* *fc-glide-turbo-max-city* *fc-glide-turbo-max-open*) *tf-glide-speed*)
+                  (fmin (if *fc-in-city?* *fc-glide-turbo-max-city* *fc-glide-turbo-max-open*) *tf-glide-speed*)
                   (fmin *tf-glide-speed* (fmax *fc-glide-max* speed-before))
                   )
               )

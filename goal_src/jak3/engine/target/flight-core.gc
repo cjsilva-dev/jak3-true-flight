@@ -138,3 +138,348 @@
     (- want)
     )
   )
+
+;; ---- Dark Jak's flight mechanics (from Dark Flight, 2026-10-08) ----
+;; Jak II calls these from its jump/fall states (dark-flight-air); Jak 3 calls the same ones for
+;; Dark Jak from its flight states (true-flight-dark-fly), so Dark Jak flies the same in both.
+;; Each game keeps its own visuals (wing beats, poses, sounds) around them.
+
+;; city (set every frame by each game's own city code)
+(define *fc-in-city?* #f)
+(define *fc-city-ceiling* 0.0)
+
+;; flap and glide state
+(define *fc-l1-time* (the-as time-frame 0))
+(define *fc-flap-from-glide?* #f) ;; set per tap in dark-flight-air
+(define *fc-flap-holding?* #f)
+(define *fc-flap-hold-given* 0.0)
+(define *fc-gliding?* #f)
+(define *fc-glide-speed* 0.0)
+(define *fc-dash-start*    (the-as time-frame 0))
+(define *fc-dashing?*      #f)
+
+;; flapping turbo (R1 right after a flap)
+(define *fc-turbo-window*      (seconds 0.5))  ;; R1 turbo lasts this long after each flap (1.2 s flung Jak on after the last flap)
+(define *fc-fly-turbo-accel-city*   (meters 25))    ;; flapping turbo in the city: driven directly (the
+(define *fc-fly-turbo-max-city*     (meters 45))    ;; surface's own easing only reached ~25 m/s)
+(define *fc-fly-turbo-accel-open* (meters 40)) ;; ... and outside the city
+(define *fc-fly-turbo-max-open*   (meters 90))
+
+;; movement profiles (surfaces): flying, flying fast (turbo), gliding, dashing
+(define *fc-dark-fly-mods* (new 'static 'surface
+                             :name 'darkjak-fly
+                             :turnv 163840.0 ;; 26 m/s, sharp turns (as Jak 3's Dark Jak)
+                             :turnvv 18204.445
+                             :tiltv 32768.0
+                             :tiltvv 262144.0
+                             :transv-max 106496.0
+                             :target-speed 106496.0
+                             :seek0 0.3
+                             :seek90 0.3
+                             :seek180 0.3
+                             :fric 0.2
+                             :nonlin-fric-dist 1.0
+                             :slip-factor 1.0
+                             :slide-factor 1.0
+                             :slope-up-factor 1.0
+                             :slope-down-factor 1.0
+                             :slope-slip-angle 1.0
+                             :impact-fric 1.0
+                             :bend-factor 1.0
+                             :bend-speed 1.0
+                             :alignv 1.0
+                             :slope-up-traction 1.0
+                             :align-speed 1.0
+                             :mode 'air
+                             :flags (surface-flag check-edge air gun-off)
+                             )
+        )
+
+(define *fc-dark-fly-fast-mods* (new 'static 'surface
+                             :name 'darkjak-fly-fast
+                             :turnv 131072.0
+                             :turnvv 18204.445
+                             :tiltv 32768.0
+                             :tiltvv 262144.0
+                             :transv-max 368640.0
+                             :target-speed 368640.0
+                             :seek0 0.3
+                             :seek90 0.3
+                             :seek180 0.3
+                             :fric 0.2
+                             :nonlin-fric-dist 1.0
+                             :slip-factor 1.0
+                             :slide-factor 1.0
+                             :slope-up-factor 1.0
+                             :slope-down-factor 1.0
+                             :slope-slip-angle 1.0
+                             :impact-fric 1.0
+                             :bend-factor 1.0
+                             :bend-speed 1.0
+                             :alignv 1.0
+                             :slope-up-traction 1.0
+                             :align-speed 1.0
+                             :mode 'air
+                             :flags (surface-flag check-edge air gun-off)
+                             )
+        )
+
+(define *fc-dark-glide-mods* (new 'static 'surface
+                             :name 'darkjak-glide
+                             :turnv 98304.0 ;; cuts sharp (as Jak 3's Dark Jak)
+                             :turnvv 18204.445
+                             :tiltv 32768.0
+                             :tiltvv 262144.0
+                             :transv-max 409600.0
+                             :target-speed 184320.0
+                             :seek0 0.05
+                             :seek90 0.05
+                             :seek180 0.05
+                             :fric 0.05
+                             :nonlin-fric-dist 1.0
+                             :slip-factor 1.0
+                             :slide-factor 1.0
+                             :slope-up-factor 1.0
+                             :slope-down-factor 1.0
+                             :slope-slip-angle 1.0
+                             :impact-fric 1.0
+                             :bend-factor 1.0
+                             :bend-speed 1.0
+                             :alignv 1.0
+                             :slope-up-traction 1.0
+                             :align-speed 1.0
+                             :mode 'air
+                             :flags (surface-flag check-edge air gun-off)
+                             )
+        )
+
+(define *fc-dark-dash-mods* (let ((m (copy *fc-dark-fly-fast-mods* 'global)))
+                         (set! (-> m name) 'darkjak-dash)
+                         (set! (-> m seek0) 0.0)
+                         (set! (-> m seek90) 0.0)
+                         (set! (-> m seek180) 0.0)
+                         (set! (-> m fric) 0.0)
+                         m
+                         )
+  )
+
+(defbehavior fc-dark-flap-speed-raw target ()
+  (let* ((up (-> self control dynam gravity-normal))
+         (vspeed (vector-dot up (-> self control transv)))
+         )
+    (if *fc-flap-from-glide?* ;; flapping out of a glide is a big launch
+        (fmin *fc-big-flap-cap* (+ *fc-big-flap-impulse* (fmax 0.0 vspeed)))
+        (fmin *fc-dark-climb-cap* (+ *fc-dark-flap-impulse* (fmax 0.0 vspeed)))
+        )
+    )
+  )
+
+(defbehavior fc-dark-flap-speed target ()
+  "Flap climb speed, limited near the city ceiling (2 m/s per metre of room left)."
+  (let ((f (fc-dark-flap-speed-raw)))
+    (if (and *fc-in-city?* (< 0.0 *fc-city-ceiling*))
+        (fmin f (fmax 0.0 (* 2.0 (- *fc-city-ceiling* (-> self control trans y)))))
+        f
+        )
+    )
+  )
+
+(defbehavior fc-dark-flap-lift target ()
+  "One flap's physics: the climb replaces the vertical speed (horizontal kept), then the forward surge."
+  (let ((v1-0 (new-stack-vector0)))
+    (let ((f0-0 (vector-dot (-> self control dynam gravity-normal) (-> self control transv))))
+      (vector-! v1-0 (-> self control transv) (vector-float*! v1-0 (-> self control dynam gravity-normal) f0-0))
+      )
+    (vector+!
+      (-> self control transv)
+      (vector-float*! (-> self control transv) (-> self control dynam gravity-normal) (fc-dark-flap-speed))
+      v1-0
+      )
+    )
+  ;; the forward surge
+  (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
+    (set! (-> fwd y) 0.0)
+    (vector-normalize! fwd 1.0)
+    (vector+float*! (-> self control transv) (-> self control transv) fwd *fc-dark-flap-surge*)
+    )
+  (none)
+  )
+
+(defbehavior fc-flap-ready? target ((first? symbol))
+  "May Jak flap now? The first flap (wings not out yet) always may; later ones keep the cooldown."
+  (or first? (>= (- (current-time) *fc-l1-time*) *fc-dark-flap-cooldown*))
+  )
+
+(defbehavior fc-flap-begin! target ()
+  "Before a flap: remember when (the R1 turbo window) and whether it comes out of a glide (big launch)."
+  (set! *fc-l1-time* (current-time))
+  (set! *fc-flap-from-glide?* *fc-gliding?*)
+  (none)
+  )
+
+(defbehavior fc-flap-end! target ()
+  "After a flap: holding X now keeps lifting (the hold tick below)."
+  (set! *fc-flap-from-glide?* #f)
+  (set! *fc-flap-holding?* #t)
+  (set! *fc-flap-hold-given* 0.0)
+  (none)
+  )
+
+(defbehavior fc-dark-flap-hold-tick target ()
+  "Per frame: holding X through a flap keeps pushing up (cancelling gravity too), up to the bonus."
+  (cond
+    ((and *fc-flap-holding?*
+          (cpad-hold? (-> self control cpad number) x)
+          (< *fc-flap-hold-given* *fc-flap-hold-bonus*)
+          )
+     (let* ((up (-> self control dynam gravity-normal))
+            (vs (vector-dot up (-> self control transv)))
+            (dv (fmin (- *fc-flap-hold-bonus* *fc-flap-hold-given*) (* *fc-flap-hold-accel* (seconds-per-frame))))
+            )
+       (set! dv (fmax 0.0 (fmin dv (- (+ *fc-dark-climb-cap* *fc-flap-hold-bonus*) vs))))
+       (if (and *fc-in-city?* (< 0.0 *fc-city-ceiling*)) ;; not through the city ceiling
+           (set! dv (fmin dv (fmax 0.0 (* 2.0 (- *fc-city-ceiling* (-> self control trans y)))))))
+       (set! *fc-flap-hold-given* (+ *fc-flap-hold-given* dv))
+       (set! dv (+ dv (* (-> self control dynam gravity-length) (seconds-per-frame))))
+       (vector+float*! (-> self control transv) (-> self control transv) up dv)
+       )
+     )
+    (else
+      (set! *fc-flap-holding?* #f)
+      )
+    )
+  (none)
+  )
+
+(defbehavior fc-dark-fly-surface target ()
+  "The flying surface: fast while R1 is held within *fc-turbo-window* of the last flap."
+  (if (and (cpad-hold? (-> self control cpad number) r1)
+           (< (- (current-time) *fc-l1-time*) *fc-turbo-window*)
+           )
+      *fc-dark-fly-fast-mods*
+      *fc-dark-fly-mods*
+      )
+  )
+
+(defbehavior fc-fly-turbo-on? target ()
+  "R1 flapping turbo: held, within the window after a flap, and not gliding (L1)."
+  (and (cpad-hold? (-> self control cpad number) r1)
+       (< (- (current-time) *fc-l1-time*) *fc-turbo-window*)
+       (not (cpad-hold? (-> self control cpad number) l1))
+       )
+  )
+
+(defbehavior fc-dark-fly-turbo target ()
+  "Per frame of the flapping turbo: accelerate along Jak's facing, like the glide turbo."
+  (let* ((up (-> self control dynam gravity-normal))
+         (tv (-> self control transv))
+         (vs (vector-dot up tv))
+         (hs (vector-length (vector-! (new-stack-vector0) tv (vector-float*! (new-stack-vector0) up vs))))
+         (fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control)))
+         )
+    (vector-! fwd fwd (vector-float*! (new-stack-vector0) up (vector-dot up fwd)))
+    (vector-normalize! fwd (fmin (if *fc-in-city?* *fc-fly-turbo-max-city* *fc-fly-turbo-max-open*)
+                                 (+ hs (* (if *fc-in-city?* *fc-fly-turbo-accel-city* *fc-fly-turbo-accel-open*)
+                                          (seconds-per-frame)
+                                          )
+                                    )
+                                 )
+                       )
+    (vector+! tv fwd (vector-float*! (new-stack-vector0) up vs))
+    )
+  (none)
+  )
+
+(defbehavior fc-dark-glide target ()
+  "Per-frame while gliding (Dark Jak): slow sink, real dive speed becomes forward speed, R1 = turbo."
+  (let* ((up (-> self control dynam gravity-normal))
+         (tv (-> self control transv))
+         (vs (vector-dot up tv))
+         (hv (vector-! (new-stack-vector0) tv (vector-float*! (new-stack-vector0) up vs)))
+         (hs (vector-length hv))
+         (fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control)))
+         (dt (seconds-per-frame))
+         (turbo? (cpad-hold? (-> self control cpad number) r1))
+         (sink (if turbo? *fc-glide-turbo-sink* *fc-dark-glide-sink*))
+         (speed-before *fc-glide-speed*)
+         )
+    (when (not *fc-gliding?*)
+      (set! *fc-gliding?* #t)
+      (set! *fc-glide-speed* hs)
+      (set! speed-before hs)
+      ;; camera up above Jak looking down on the glide, as in Jak 3
+      (set-setting! 'string-min-height 'abs (meters 4) 0)
+      (set-setting! 'string-max-height 'abs (meters 8) 0)
+      )
+    (if (logtest? (-> self control status) (collide-status touch-wall))
+        (set! *fc-glide-speed* (fmin *fc-glide-speed* hs))
+        )
+    (when (< vs (- sink))
+      (let ((shed (fmin (- (- sink) vs) (* *fc-glide-catch* dt))))
+        (set! vs (+ vs shed))
+        ;; only real dive speed becomes forward speed, not gravity's per-frame pull
+        (set! *fc-glide-speed*
+              (+ *fc-glide-speed*
+                 (* *fc-glide-convert* (fmax 0.0 (- shed (* 1.5 (-> self control dynam gravity-length) dt))))
+                 )
+              )
+        )
+      )
+    (cond
+      (turbo?
+        (set! *fc-glide-speed* (+ *fc-glide-speed* (* (if *fc-in-city?* *fc-glide-turbo-accel-city* *fc-glide-turbo-accel-open*) dt)))
+        )
+      ((< *fc-glide-speed* *fc-dark-glide-cruise*)
+       (set! *fc-glide-speed* (fmin *fc-dark-glide-cruise* (+ *fc-glide-speed* (* *fc-glide-accel* dt))))
+       )
+      (else
+        (set! *fc-glide-speed* (- *fc-glide-speed* (* (- *fc-glide-speed* *fc-dark-glide-cruise*) *fc-glide-drag* dt)))
+        )
+      )
+    (set! *fc-glide-speed*
+          (if turbo?
+              (fmin (if *fc-in-city?* *fc-glide-turbo-max-city* *fc-glide-turbo-max-open*) *fc-glide-speed*)
+              (fmin *fc-glide-speed* (fmax *fc-glide-max* speed-before))
+              )
+          )
+    (vector-! fwd fwd (vector-float*! (new-stack-vector0) up (vector-dot up fwd)))
+    (vector-normalize! fwd *fc-glide-speed*)
+    (vector+! tv fwd (vector-float*! (new-stack-vector0) up vs))
+    (set! (-> self control dynam gravity-length) *fc-glide-gravity*)
+    (set! (-> self control mod-surface) *fc-dark-glide-mods*)
+    )
+  (none)
+  )
+
+(defbehavior fc-dark-glide-end target ()
+  "Leaving a glide: back to the flight camera band."
+  (when *fc-gliding?*
+    (set-setting! 'string-min-height 'abs (meters 1) 0)
+    (set-setting! 'string-max-height 'abs (meters 10) 0)
+    )
+  (set! *fc-gliding?* #f)
+  (none)
+  )
+
+(defbehavior fc-dash-glide-bump target ()
+  "A dash while gliding: the glide carries its own speed, so give it the lunge (it bleeds off as momentum)."
+  (if *fc-gliding?* ;; the glide carries its own speed: give it the lunge (it bleeds off as momentum)
+      (set! *fc-glide-speed* (fmax *fc-glide-speed* (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*)))
+      )
+  (none)
+  )
+
+(defbehavior fc-dash-lunge target ()
+  "Per frame of a dash (not gliding): a level lunge along Jak's facing on the no-steering dash surface."
+  (when (not *fc-gliding?*)
+    (let ((fwd (vector-z-quaternion! (new-stack-vector0) (-> self control quat-for-control))))
+      (set! (-> fwd y) 0.0)
+      (vector-normalize! fwd (if *fc-in-city?* *fc-dash-city-speed* *fc-dash-speed*))
+      (set! (-> self control transv x) (-> fwd x))
+      (set! (-> self control transv z) (-> fwd z))
+      (set! (-> self control transv y) (fmax 0.0 (-> self control transv y))) ;; a level lunge
+      )
+    (set! (-> self control mod-surface) *fc-dark-dash-mods*)
+    )
+  (none)
+  )
