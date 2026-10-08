@@ -217,7 +217,6 @@ class Merc2 {
     bool ignore_alpha;
     bool disable_fog;
     bool no_texture;
-    bool solid_base;  // True Flight: draw the base pass solid
     u64 hash;
     u32 lights;
     u32 first_bone;

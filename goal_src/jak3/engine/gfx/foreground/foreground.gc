@@ -1635,7 +1635,6 @@
   (pc-blerc 2)
   (disable-envmap 3)
   (no-textures 4)
-  (solid-base 5) ;; draw the base pass with normal blending and depth write (draw-control-global-effect pc-solid-base)
   )
 
 (deftype pc-merc-flags (structure)
@@ -1755,9 +1754,6 @@
               )
             (when (logtest? (-> dc global-effect) (draw-control-global-effect no-textures))
               (logior! (-> flags bit-flags) (pc-merc-bits no-textures))
-              )
-            (when (logtest? (-> dc global-effect) (draw-control-global-effect pc-solid-base))
-              (logior! (-> flags bit-flags) (pc-merc-bits solid-base))
               )
             (set! (-> flags enable-mask) enable-mask)
             (set! (-> flags ignore-alpha-mask) ignore-alpha-mask)

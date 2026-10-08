@@ -540,7 +540,6 @@ void Merc2::handle_pc_model(const DmaTransfer& setup,
   bool model_uses_pc_blerc = flags->bitflags & 4;
   bool model_disables_envmap = flags->bitflags & 8;
   bool model_no_texture = flags->bitflags & 16;
-  bool model_solid_base = flags->bitflags & 32;  // True Flight: base pass drawn solid (Dark Jak's wings)
   input_data += 32;
 
   float blerc_weights[kMaxBlerc];
@@ -631,7 +630,6 @@ void Merc2::handle_pc_model(const DmaTransfer& setup,
   args.lights = lights;
   args.first_bone = first_bone;
   args.no_texture = render_state->version == GameVersion::Jak3 && model_no_texture;
-  args.solid_base = model_solid_base;
 
   // loop over effects, creating draws for each
   for (size_t ei = 0; ei < model->effects.size(); ei++) {
@@ -1097,14 +1095,6 @@ Merc2::Draw* Merc2::alloc_normal_draw(const tfrag3::MercDraw& mdraw, const DrawA
   if (args.jak1_water_mode) {
     draw->mode.set_ab(true);
     draw->mode.disable_depth_write();
-  }
-  if (args.solid_base) {
-    // True Flight: an additive glow model drawn as a solid surface (normal blending, depth write).
-    // Only the base pass: envmap draws keep their own mode (try_alloc_envmap_draw).
-    draw->mode.set_ab(true);
-    draw->mode.set_alpha_blend(DrawMode::AlphaBlend::SRC_DST_SRC_DST);
-    draw->mode.enable_depth_write();
-    draw->mode.set_at(false);
   }
 
   if (args.disable_fog) {

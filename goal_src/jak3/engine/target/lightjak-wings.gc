@@ -7,9 +7,9 @@
 
 (define-extern wings-ragdoll-proc-init-by-other (function ragdoll-proc object :behavior wings-ragdoll-proc))
 (define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
+(define-extern *fc-l1-time* time-frame) ;; last flap time (flight-core.gc, compiled later): the flap flare
 
 ;; TRUE FLIGHT: Dark Jak's wings are made of unstable dark eco. Same model as Light Jak's, but on him:
-;; - drawn as a solid surface instead of a glow (pc-solid-base, a PC renderer switch), at an opacity;
 ;; - recolored purple: the base texture (the lightjak-wings texture animation's layer colors) and the
 ;;   envmap glow on top (the model's envmap tint), both shared with Light Jak, so Light restores them;
 ;; - an unstable glow: it drifts, gutters out for a frame now and then and flares on each flap;
@@ -25,7 +25,6 @@
 ;; color
 (define *tf-dark-wing-glow* (new 'static 'array int32 3 55 0 90))            ;; envmap glow tint, 0-255 (128 = Light's)
 (define *tf-dark-wing-base* (new 'static 'vector :x 1.5 :y 0.25 :z 2.0 :w 1.0)) ;; base texture color (Light's: 1 1 1)
-(define *tf-dark-wing-alpha* 0.6)   ;; opacity of the solid wing, 0-1
 ;; unstable glow
 (define *tf-dark-wing-flicker?* #t)
 (define *tf-dark-wing-k* 1.0)
@@ -161,8 +160,7 @@
                      (-> self draw lod-set lod 0 geo)
                      )
     )
-  ;; the solid wing's opacity rides on the light color's alpha (vertex alpha = rgba x light alpha)
-  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 *tf-dark-wing-alpha*)
+  (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
   (when (and (not (logtest? (-> self draw status) (draw-control-status no-draw no-draw-temp)))
              (not (movie?))
              (nonzero? (-> self skel active-channels))
@@ -604,12 +602,8 @@
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
     ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco
     (if (focus-test? (the-as process-focusable v1-0) dark)
+        (tf-dark-wings-fx)
         (begin
-          (logior! (-> self draw global-effect) (draw-control-global-effect pc-solid-base)) ;; solid, not a glow
-          (tf-dark-wings-fx)
-          )
-        (begin
-          (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
           (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
           (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
           (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
