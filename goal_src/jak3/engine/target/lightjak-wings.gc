@@ -73,7 +73,8 @@
 
 ;; The wings are 8 feathers (4 a side) of 5 bones each, every feather rooted on bone 3 (roots:
 ;; 4 9 14 19 24 29 34 39; the tips are root + 4).
-(define *tf-dark-wings-shape?* #f)  ;; set every frame by the wings process: its parent is Dark Jak
+(define *tf-dark-wings-shape?* #f)  ;; the wings are Dark Jak's (set on the Dark/Light edge by wings-post)
+(define *tf-wings-mode* 'none)      ;; whose look the wings currently wear: 'dark, 'light, or 'none (fresh wings)
 (define *tf-dark-feather-scale* (new 'static 'array float 8 1.9 0.2 1.35 0.12 1.9 0.2 1.35 0.12)) ;; feather lengths
 (define *tf-dark-feather-twitch* 16.0)     ;; degrees, jerky (at the root)
 (define *tf-dark-feather-twitch-chance* 0.4)
@@ -143,8 +144,8 @@
   )
 
 (defbehavior tf-dark-wings-fx wings ()
-  "Per frame on Dark Jak: the dark color and its flicker, ragged feathers, sparks and lightning."
-  (set! *tf-dark-wings-shape?* #t)
+  "Per frame on Dark Jak: the dark color and its flicker, ragged feathers, sparks and lightning
+   (the flicker is animation, so this runs every frame he wears them)."
   (tf-dark-feathers-hook)
   (set! *tf-dark-wing-pop* (fmax 1.0 (- *tf-dark-wing-pop* (* 2.0 (seconds-per-frame)))))
   ;; the unstable glow: drift toward a random brightness, gutter now and then, flare on a flap
@@ -628,16 +629,24 @@
   (let ((v1-0 (ppointer->process (-> self parent))))
     (set! (-> self draw light-index) (-> (the-as process-focusable v1-0) draw light-index))
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
-    ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco
-    (if (focus-test? (the-as process-focusable v1-0) dark)
-        (tf-dark-wings-fx) ;; (sets its own drawing style: smoked glass or glow)
-        (begin
-          (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
-          (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
-          (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
-          (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
-          )
-        )
+    ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco; Light Jak's own look
+    ;; is put back once, the frame the wings stop being Dark Jak's (and on fresh wings)
+    (cond
+      ((focus-test? (the-as process-focusable v1-0) dark)
+       (when (!= *tf-wings-mode* 'dark)
+         (set! *tf-wings-mode* 'dark)
+         (set! *tf-dark-wings-shape?* #t)
+         )
+       (tf-dark-wings-fx) ;; (sets its own drawing style: smoked glass or glow)
+       )
+      ((!= *tf-wings-mode* 'light)
+       (set! *tf-wings-mode* 'light)
+       (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
+       (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
+       (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
+       (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
+       )
+      )
     (set! (-> self draw death-vertex-skip) (-> self parent 0 draw death-vertex-skip))
     (set! (-> self draw death-effect) (-> self parent 0 draw death-effect))
     (set! (-> self draw death-timer) (-> self parent 0 draw death-timer))
@@ -936,6 +945,7 @@
 
 ;; WARN: Return type mismatch object vs none.
 (defbehavior wings-init wings ((arg0 symbol))
+  (set! *tf-wings-mode* 'none) ;; TRUE FLIGHT: fresh wings wear nobody's look yet
   (set! (-> self root) (new 'process 'trsqv))
   (initialize-skeleton
     self

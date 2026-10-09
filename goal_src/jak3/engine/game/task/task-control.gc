@@ -84,6 +84,8 @@
   (cty-faction-evaluate-commands arg0)
   )
 
+(define-extern tf-game-defaults (function none)) ;; TRUE FLIGHT (target-lightjak.gc)
+
 (defun update-task-masks ((arg0 symbol))
   (local-vars (a3-2 symbol))
   (if (= arg0 'none)
@@ -147,6 +149,7 @@
       (set! (-> *game-info* dark-crystal) 0.0)
       )
     )
+  (tf-game-defaults) ;; TRUE FLIGHT: what the mod adds to a game's state, once, right here
   (let ((s5-0 (-> *minimap* engine alive-list)))
     (while s5-0
       (let ((s4-0 s5-0))

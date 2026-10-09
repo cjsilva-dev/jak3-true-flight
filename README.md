@@ -68,7 +68,10 @@ At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.
 - `*tf-opt-quiet-debug?*` — for development: hides the debug text and cursor in a `-debug` boot
 
 What these unlock is saved (in your save file and PC settings) and stays unlocked if you switch the
-option off again. With both off — the default — the mod writes nothing to your save.
+option off again. They are applied with the mod's save defaults (`tf-game-defaults`), in the one place
+the game itself decides what Jak has: when a game starts, a save loads or Jak respawns. Nothing is
+written while you play. With all of them off — the default — the mod writes only Unlimited Light Jak
+to your save (see above).
 
 ## What this mod changes
 
@@ -76,7 +79,8 @@ option off again. With both off — the default — the mod writes nothing to yo
 - `goal_src/jak3/engine/target/flight-core.gc` — the flight both mods share: Dark Jak's flap, glide, turbo, dash and
   posture, and the tuning both games agree on (the same file is in Dark Flight)
 - `goal_src/jak3/engine/target/lightjak-wings.gc` — the wings' dark look: jagged shape, colors and flicker, the two styles,
-  sparks and lightning (Light Jak's own colors are put back whenever he flies)
+  sparks and lightning (Light Jak's own colors are put back the moment the wings stop being Dark Jak's)
+- `goal_src/jak3/engine/game/task/task-control.gc` — calls the mod's save defaults where the game rebuilds what Jak has
 - `goal_src/jak3/engine/target/target.gc` — Dark Jak takes off from the double jump
 - `goal_src/jak3/engine/target/target-death.gc` — a hit while flying is a flinch in the air
 - `goal_src/jak3/engine/common-obs/powerups.gc` — the wings are removed before their animations are unloaded

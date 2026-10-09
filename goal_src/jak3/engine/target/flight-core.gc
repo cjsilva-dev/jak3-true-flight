@@ -490,7 +490,9 @@
 ;; onto Jak's chest bone (node 6); the lean is each game's own body-tilt callback on node 3.
 (define *fc-dark-hunch*       25.0)  ;; chest hunched forward while flying, degrees
 (define *fc-dark-hunch-now*   0.0)
-(define *fc-hunching?*        #f)    ;; Dark Jak is flying (set by each game every frame it flies)
+(define *fc-hunching?*        #f)    ;; Dark Jak is flying (each game sets it at takeoff, clears it when the flight ends)
+(define *fc-cam?*             #f)    ;; Jak is flying: cam-master.gc tracks him as on the ground instead of its air mode
+                                     ;; (each game sets it when a flight state begins, clears it when it ends)
 (define *fc-dark-glide-pitch* 30.0)  ;; leans forward into the glide, degrees
 (define *fc-launch-pitch*     -27.0) ;; a flap out of a glide: 27 degrees nose-up
 
@@ -518,9 +520,10 @@
   )
 
 (defbehavior fc-dark-hunch-hook target ()
-  "While Dark Jak flies (*fc-hunching?*): hook the hunch onto his chest bone, every frame (a bone keeps
-   whatever function it was given). A flight cut short by a death or a load kills the hook with the
-   process, so a hook that isn't there means any angle left over is stale: start from upright."
+  "Dark Jak's takeoff (*fc-hunching?* set): hook the hunch onto his chest bone (a bone keeps whatever
+   function it was given, and the hook takes itself off once he's upright again). A flight cut short
+   by a death or a load kills the hook with the process, so a hook that isn't there means any angle
+   left over is stale: start from upright."
   (when *fc-hunching?*
     (if (!= (-> self node-list data 6 param0) fc-dark-chest-joint)
         (set! *fc-dark-hunch-now* 0.0)

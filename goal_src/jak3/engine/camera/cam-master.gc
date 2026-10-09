@@ -23,8 +23,8 @@
     )
   )
 
-;; TRUE FLIGHT MOD: set by Jak 3's flight states every frame while flying.
-(define *true-flight-cam?* #f)
+;; FLIGHT MODS: Jak is flying (defined in flight-core.gc; set when a flight state begins, cleared when it ends).
+(define-extern *fc-cam?* symbol)
 
 (defbehavior reset-follow camera-master ((arg0 symbol))
   (let ((a0-2 (handle->process (-> self focus handle))))
@@ -222,11 +222,11 @@
         (let ((s5-7 (new-stack-vector0)))
           0.0
           (cond
-            ;; TRUE FLIGHT MOD: while flying, track Jak like on the ground (as halfpipes do).
+            ;; FLIGHT MODS: while flying, track Jak like on the ground (as halfpipes do).
             ;; Air tracking barely rises and pitches up instead, so up high you looked up at him.
             ((and (focus-test? (the-as process-focusable gp-0) in-air)
                   (not (logtest? (focus-status halfpipe super) (-> (the-as process-focusable gp-0) focus-status)))
-                  (not *true-flight-cam?*)
+                  (not *fc-cam?*)
                   )
              (if *display-cam-los-debug*
                  (format *stdcon* "air tracking~%")
