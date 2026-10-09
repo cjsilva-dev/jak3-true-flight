@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
   "sourceName": "Dark Flight & True Flight",
-  "lastUpdated": "2026-10-09T12:55:15Z",
+  "lastUpdated": "2026-10-09T15:01:53Z",
   "mods": {
     "jet-board-start": {
       "displayName": "JET-Board Start",
@@ -170,6 +170,27 @@
         "jak3"
       ],
       "versions": [
+        {
+          "version": "0.4.1",
+          "publishedDate": "2026-10-09T15:01:53Z",
+          "supportedGames": [
+            "jak3"
+          ],
+          "settings": {
+            "decompConfigOverride": "",
+            "shareVanillaSaves": false
+          },
+          "assets": {
+            "windows": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.4.1/windows-v0.4.1.zip",
+            "linux": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.4.1/linux-v0.4.1.tar.gz",
+            "macos": "https://github.com/cjsilva-dev/jak3-true-flight/releases/download/v0.4.1/macos-intel-v0.4.1.tar.gz"
+          },
+          "assetDownloadCounts": {
+            "windows": 0,
+            "linux": 0,
+            "macos": 0
+          }
+        },
         {
           "version": "0.4.0",
           "publishedDate": "2026-10-08T22:13:53Z",
