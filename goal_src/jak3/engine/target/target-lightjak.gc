@@ -1303,12 +1303,18 @@
   "What the mod adds to a game's state, applied ONCE from update-task-masks (task-control.gc): the
    engine rebuilds the game's feature flags there on every new game, loaded save and respawn, after
    a save has been restored, so this runs exactly where the game itself decides what Jak has."
-  ;; Fly as long as you like: the game's own Unlimited Light Jak secret comes bought and switched ON
-  ;; in any save that never had it (new games included); after that it's the player's to switch off
-  ;; in the Secrets menu, and the save remembers. (Same as Dark Flight.)
+  ;; Fly as long as you like: the game's own Unlimited Light Jak and Unlimited Dark Jak secrets come
+  ;; bought and switched ON in any save that never had them (new games included); after that they're
+  ;; the player's to switch off in the Secrets menu, and the save remembers. With one off, that form
+  ;; costs what it costs in the original game, except that flying is free (the swoop's eco charge is
+  ;; gone, see target-lightjak-swoop). (Same rule as Dark Flight.)
   (when (not (logtest? (-> *game-info* purchase-secrets) (game-secrets endless-light)))
     (logior! (-> *game-info* purchase-secrets) (game-secrets endless-light))
     (logior! (-> *game-info* secrets) (game-secrets endless-light))
+    )
+  (when (not (logtest? (-> *game-info* purchase-secrets) (game-secrets endless-dark)))
+    (logior! (-> *game-info* purchase-secrets) (game-secrets endless-dark))
+    (logior! (-> *game-info* secrets) (game-secrets endless-dark))
     )
   ;; option: every Light Jak power and endless light eco from any save
   (when *tf-opt-all-light-powers?*
@@ -1324,10 +1330,6 @@
   ;; dark eco meter (turning into Dark Jak needs some)
   (when *tf-opt-all-dark-powers?*
     (logior! (-> *game-info* features) (game-feature darkjak darkjak-smack darkjak-bomb0 darkjak-bomb1 darkjak-tracking darkjak-invinc))
-    (when (not (logtest? (-> *game-info* purchase-secrets) (game-secrets endless-dark)))
-      (logior! (-> *game-info* purchase-secrets) (game-secrets endless-dark))
-      (logior! (-> *game-info* secrets) (game-secrets endless-dark))
-      )
     (if (< (-> *game-info* eco-pill-dark) (-> *FACT-bank* eco-pill-dark-max-default))
         (set! (-> *game-info* eco-pill-dark) (-> *FACT-bank* eco-pill-dark-max-default))
         )
@@ -2846,9 +2848,9 @@
         (set! (-> self lightjak wings) (process-spawn wings :init wings-init 'open :name "wings" :to self))
         )
     (when (and (-> self next-state) (= (-> self next-state name) 'target-lightjak-swoop))
-      (if (not (or (logtest? (-> self lightjak stage) (lightjak-stage ls1)) *tf-dark-mode?*)) ;; TRUE FLIGHT: Dark Jak flies free
-          (send-event self 'get-pickup (pickup-type eco-pill-light) (- (-> *FACT-bank* lightjak-swoop-inc)))
-          )
+      ;; TRUE FLIGHT: flying is free. The original game charged light eco for every swoop; with
+      ;; Unlimited Light Jak switched off, everything else (shield, freeze, regen) still costs what it
+      ;; did, but a flap never does. (Dark Jak's borrowed-wing flight never paid either.)
       (send-event (ppointer->process (-> self lightjak wings)) 'open)
       )
     (set! (-> self control unknown-word04) (the-as uint #t))

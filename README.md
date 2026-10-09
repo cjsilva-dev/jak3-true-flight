@@ -54,9 +54,10 @@ glide off the edge of the world anyway, you're put back where you left solid gro
 
 ## Unlimited Light Jak
 
-Jak 3's own *Secrets* menu item **Unlimited Light Jak** is unlocked and switched **on** in any save that
-doesn't have it yet, so you can fly as long as you like. Switch it off there if you'd rather manage
-light eco (each flap then uses some, as in the original game). It's saved with your game.
+Jak 3's own *Secrets* menu items **Unlimited Light Jak** and **Unlimited Dark Jak** are unlocked and
+switched **on** in any save that doesn't have them yet, so you can fly as long as you like. Switch one
+off there if you'd rather manage that eco: the shield, freeze, regen and Dark Jak's attacks then cost
+what they cost in the original game, but **flying is free**, a flap never uses any. Saved with your game.
 
 ## Options
 
