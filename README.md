@@ -63,15 +63,15 @@ what they cost in the original game, but **flying is free**, a flap never uses a
 
 At the top of the options block in `goal_src/jak3/engine/target/target-lightjak.gc` (off by default):
 
-- `*tf-opt-all-light-powers?*` — every Light Jak power and endless light eco from any save
+- `*tf-opt-all-light-powers?*` — every Light Jak power from any save
 - `*tf-opt-unlock-extras?*` — every Secrets-menu item and OpenGOAL PC cheat unlocked
 - `*tf-opt-all-dark-powers?*` — Dark Jak and all his powers, Unlimited Dark Jak and a full dark eco meter from any save
 - `*tf-opt-quiet-debug?*` — for development: hides the debug text and cursor in a `-debug` boot
 
 What these unlock is saved (in your save file and PC settings) and stays unlocked if you switch the
 option off again. They are applied with the mod's save defaults (`tf-game-defaults`), in the one place
-the game itself decides what Jak has: when a game starts, a save loads or Jak respawns. Nothing is
-written while you play. With all of them off — the default — the mod writes only Unlimited Light Jak
+the game itself decides what Jak has: whenever it rebuilds Jak's abilities (a new game, a loaded save,
+a respawn, a level change). Nothing is written while you play. With all of them off — the default — the mod writes only Unlimited Light Jak
 to your save (see above).
 
 ## What this mod changes

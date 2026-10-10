@@ -1294,7 +1294,7 @@
 
 ;; ======================= TRUE FLIGHT OPTIONS =======================
 ;; Extras that change the normal game. Off for release; set to #t for a sandbox build.
-(define *tf-opt-all-light-powers?* #f) ;; every Light Jak power + endless light eco from any save
+(define *tf-opt-all-light-powers?* #f) ;; every Light Jak power from any save
 (define *tf-opt-unlock-extras?*    #f) ;; every Secrets-menu item and OpenGOAL PC cheat unlocked (still toggled in the menus)
 (define *tf-opt-all-dark-powers?*  #f) ;; Dark Jak + all his powers + Unlimited Dark Jak from any save (to try Dark Jak flight)
 (define *tf-opt-quiet-debug?*      #f) ;; dev: in a -debug boot, hide the debug text overlay and mouse cursor
@@ -1319,7 +1319,7 @@
   ;; option: every Light Jak power and endless light eco from any save
   (when *tf-opt-all-light-powers?*
     (logior! (-> *game-info* features) (game-feature lightjak lightjak-regen lightjak-swoop lightjak-freeze lightjak-shield))
-    (logior! (-> *game-info* secrets) (game-secrets endless-light))
+    ;; (Unlimited Light Jak comes from the default above, once; the player's switch stays theirs)
     )
   ;; option (dev): a debug boot without the debug overlays
   (when (and *tf-opt-quiet-debug?* (= *cheat-mode* 'debug))
@@ -2914,8 +2914,7 @@
       )
     (set! *fc-cam?* #f) ;; TRUE FLIGHT MOD (the next flight state's enter sets it again)
     (set! *fc-hunching?* #f)
-    (set! *tf-launching?* #f)
-    (set! *tf-tilt-glide?* #f)
+    (set! *tf-tilt-glide?* #f) ;; (*tf-launching?* is the bone hook's own, written there only)
     (target-exit)
     )
   :trans (behavior ()
