@@ -25,6 +25,28 @@
 ;; - Dark Jak's own crackle running between the feathers, sparks, and a burst on takeoff;
 ;; - ragged feathers: uneven lengths, kinks toward the tips, thin spiky tips, a nervous twitch.
 ;; All of it is tuned live from the REPL through these globals (Corey picked them by eye, 2026-10-08).
+;; The crackle's bolts: the game's Dark Jak transformation lightning, minus its sound. That spec plays
+;; "transform-zap" on every bolt, and the crackle fires about 13 bolts a second (2026-10-09: "repeated
+;; Dark Jak activation" while gliding). The takeoff burst and the flap zap keep the one sound each.
+(define *tf-crackle-spec* (new 'static 'lightning-spec
+                            :name "lightning-dark-wings-crackle"
+                            :flags (lightning-spec-flags lsf0)
+                            :start-color (new 'static 'rgba :r #xff :g #xff :b #xff :a #x80)
+                            :end-color (new 'static 'rgba :r #xff :g #xff :b #xff :a #x80)
+                            :fade-to-color (new 'static 'rgba :r #xbf :b #x8f :a #x5)
+                            :fade-start-factor 0.2
+                            :texture (new 'static 'texture-id :index #x3a :page #x4)
+                            :reduction 0.42
+                            :num-points 16
+                            :box-size 8192.0
+                            :merge-factor 0.5
+                            :merge-count 2
+                            :radius 1638.4
+                            :duration 30.0
+                            :duration-rand 90.0
+                            :sound #f
+                            )
+  )
 (define *tf-dark-wing-zap?* #f)     ;; a flap asks for a lightning arc
 (define *tf-dark-wing-zap-chance* 0.02) ;; random arcs off the wings per frame
 (define *tf-dark-wing-spark-chance* 0.5) ;; sparks shed per frame
@@ -211,16 +233,16 @@
         (launch-particles (-> *part-id-table* 173) (process-drawable-random-point! self (new 'stack-no-clear 'vector)))
         )
     (when (or *tf-dark-wing-zap?* (rand-vu-percent? *tf-dark-wing-zap-chance*))
-      (set! *tf-dark-wing-zap?* #f)
       (process-drawable-shock-effect
         self
-        (-> *lightning-spec-id-table* 7)
+        (if *tf-dark-wing-zap?* (-> *lightning-spec-id-table* 7) *tf-crackle-spec*) ;; a flap's zap sounds; the random ones don't
         lightning-probe-callback
         (-> *part-id-table* 187)
         0
         0
         40960.0
         )
+      (set! *tf-dark-wing-zap?* #f)
       )
     ;; Dark Jak's crackle, running from a bone of one feather to a bone of the next (it follows the flap)
     (when (rand-vu-percent? *fc-wing-arc-chance*)
@@ -230,7 +252,7 @@
              (j2 (+ 4 (* c2 5) (rand-vu-int-range 1 4)))
              )
         (when (and (< j1 (-> self node-list length)) (< j2 (-> self node-list length)))
-          (fc-wing-arc (-> *lightning-spec-id-table* 7) j1 j2) ;; (flight-core.gc)
+          (fc-wing-arc *tf-crackle-spec* j1 j2) ;; (flight-core.gc); silent bolts
           )
         )
       )
