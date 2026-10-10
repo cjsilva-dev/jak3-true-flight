@@ -95,6 +95,24 @@
 
 ;; The wings are 8 feathers (4 a side) of 5 bones each, every feather rooted on bone 3 (roots:
 ;; 4 9 14 19 24 29 34 39; the tips are root + 4).
+;; The wing model's own envmap glow tint: read from the wings once per boot before any look is applied,
+;; and what Light Jak's look puts back (it was assumed to be 128, the neutral value, before 2026-10-09).
+(define *tf-wing-tint* (new 'static 'rgba :r #x80 :g #x80 :b #x80 :a #x80))
+(define *tf-wing-tint-read?* #f)
+(defun tf-wings-tint-read ((geo merc-ctrl))
+  "Remember the wing model's own envmap tint, once per boot."
+  (dotimes (i (the int (-> geo header effect-count)))
+    (let ((e (-> geo effect i)))
+      (when (and (logtest? (-> e effect-usage) 1) (-> e extra-info))
+        (let ((ti (the-as mei-envmap-tint (+ (the-as uint (-> e extra-info)) (* (-> e extra-info envmap-tint-offset) 16)))))
+          (set! *tf-wing-tint* (-> ti tint))
+          (set! *tf-wing-tint-read?* #t)
+          )
+        )
+      )
+    )
+  (none)
+  )
 (define *tf-dark-wings-shape?* #f)  ;; the wings are Dark Jak's (set on the Dark/Light edge by wings-post)
 (define *tf-wings-mode* 'none)      ;; whose look the wings currently wear: 'dark, 'light, or 'none (fresh wings)
 (define *tf-dark-feather-scale* (new 'static 'array float 8 1.9 0.2 1.35 0.12 1.9 0.2 1.35 0.12)) ;; feather lengths
@@ -653,6 +671,7 @@
     (set-vector! (-> self draw color-mult) 0.0 0.0 0.0 0.0)
     ;; TRUE FLIGHT: on Dark Jak the wings turn ragged and crackle with dark eco; Light Jak's own look
     ;; is put back once, the frame the wings stop being Dark Jak's (and on fresh wings)
+    (if (not *tf-wing-tint-read?*) (tf-wings-tint-read (-> self draw lod-set lod 0 geo))) ;; the model's tint, before any look touches it
     (cond
       ((focus-test? (the-as process-focusable v1-0) dark)
        (when (!= *tf-wings-mode* 'dark)
@@ -665,7 +684,8 @@
        (set! *tf-wings-mode* 'light)
        (logclear! (-> self draw global-effect) (draw-control-global-effect pc-solid-base))
        (set! *tf-dark-wings-shape?* #f) ;; Light Jak: the feathers stay as they are
-       (tf-wings-colors #x80 #x80 #x80 1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors
+       (tf-wings-colors (the int (-> *tf-wing-tint* r)) (the int (-> *tf-wing-tint* g)) (the int (-> *tf-wing-tint* b))
+                        1.0 1.0 1.0 (-> self draw lod-set lod 0 geo)) ;; and his own colors (the model's tint, white layers)
        (set-vector! (-> self draw color-emissive) 1.0 1.0 1.0 1.0)
        )
       )
