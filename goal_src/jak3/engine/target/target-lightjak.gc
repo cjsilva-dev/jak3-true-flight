@@ -2418,11 +2418,6 @@
 ;; zoomer lanes are always reachable). Surfaces from a downward-ray survey of each district's
 ;; collision: port 64.9, ctygen 51.8, slumc 46.7, indb 43.8, slumb 30.6,
 ;; inda 26.8, sluma 24.9. Main city visibility breaks from ~46 m, above which only a tower is.
-(define *tf-ceil-port*      (meters 73))
-(define *tf-ceil-gen*       (meters 60))
-(define *tf-ceil-slumc*     (meters 55))
-(define *tf-ceil-indb*      (meters 52))
-(define *tf-ceil-default*   (meters 40))  ;; sluma, slumb, inda and the rest of the city
 
 ;; Load by location: twice a second while flying in the city, load the district you're heading for.
 ;; Districts are walled off and loaded by trigger regions at the gates, which flying over the walls
@@ -2445,20 +2440,9 @@
                           )
         )
   (fs-tick)
-  (when *fc-in-city?*
-    ;; the ceiling of the district Jak is actually over (current-level lags far behind in flight;
-    ;; the streamer's continue-point lookup is current)
-    (let ((nm (symbol->string (if (and *fs-stream-now* (member *fs-stream-now* *tf-city-districts*)) *fs-stream-now* (-> self current-level name)))))
-      (set! *fc-city-ceiling* (cond
-                                ((string-prefix= "ctyport" nm) *tf-ceil-port*)
-                                ((string-prefix= "ctygen" nm) *tf-ceil-gen*)
-                                ((string-prefix= "ctyslumc" nm) *tf-ceil-slumc*)
-                                ((string-prefix= "ctyindb" nm) *tf-ceil-indb*)
-                                (else *tf-ceil-default*)
-                                )
-            )
+  (if *fc-in-city?*
+      (set! *fc-city-ceiling* *fc-city-ceil*) ;; one height for the whole city (flight-core.gc)
       )
-    )
   (cond
     (*fc-in-city?*
       (let ((v (vector-float*! (new-stack-vector0) (-> self control transv) *fc-region-ahead*)))

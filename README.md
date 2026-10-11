@@ -44,8 +44,8 @@ needed.
 
 ### In Haven City
 
-Haven only keeps a couple of districts loaded at once, so flight there is tuned to it: each district has
-its own ceiling (just above the highest place you can stand) and the turbo is capped.
+Haven only keeps a couple of districts loaded at once, so flight there is tuned to it: the city has a
+200 m ceiling (the whole skyline is yours) and the turbo is capped.
 
 The mod knows which district owns the ground under you and along your path, so the one you're heading
 into is loaded before you get there, even when you fly over the walls between them at full speed.

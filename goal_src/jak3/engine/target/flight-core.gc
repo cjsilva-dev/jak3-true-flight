@@ -147,6 +147,10 @@
 ;; city (set every frame by each game's own city code)
 (define *fc-in-city?* #f)
 (define *fc-city-ceiling* 0.0)
+;; The city's flight ceiling, one height everywhere (2026-10-11, Corey: "exactly like the streaming test",
+;; which flew Haven at this height in both games). It used to be a per-district table just above the
+;; highest standable surface. The flight wall at the city's edge is unchanged.
+(define *fc-city-ceil* (meters 200))
 
 ;; flap and glide state
 (define *fc-l1-time* (the-as time-frame 0))
