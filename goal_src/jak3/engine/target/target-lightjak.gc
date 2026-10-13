@@ -2506,27 +2506,28 @@
 (define *tf-flap-hold-given* 0.0)
 
 (defbehavior true-flight-flap-hold target ()
-  "Per-frame in the flap states: extra lift while X stays held."
-  (cond
-    ((and *tf-flap-holding?*
-          (cpad-hold? (-> self control cpad number) x)
-          (< *tf-flap-hold-given* *fc-flap-hold-bonus*)
+  "Per-frame in the flap states: extra lift while X stays held. Ends when the budget is spent or the
+   climb cap leaves it nothing to add (the same endless-climb guard as fc-dark-flap-hold-tick)."
+  (let ((dv 0.0))
+    (when (and *tf-flap-holding?*
+               (cpad-hold? (-> self control cpad number) x)
+               (< *tf-flap-hold-given* *fc-flap-hold-bonus*)
+               )
+      (let* ((up (-> self control dynam gravity-normal))
+             (vs (vector-dot up (-> self control transv)))
+             )
+        (set! dv (fmin (- *fc-flap-hold-bonus* *tf-flap-hold-given*) (* *fc-flap-hold-accel* (seconds-per-frame))))
+        ;; the flap's own cap still applies to tapped flaps; held flaps may exceed it by the bonus
+        (set! dv (fmax 0.0 (fmin dv (- (+ TF-CLIMB-CAP *fc-flap-hold-bonus*) vs))))
+        (when (< (meters 0.01) dv) ;; only a real push cancels gravity (which would otherwise eat it)
+          (set! *tf-flap-hold-given* (+ *tf-flap-hold-given* dv))
+          (vector+float*! (-> self control transv) (-> self control transv) up (+ dv (* (-> self control dynam gravity-length) (seconds-per-frame))))
           )
-     (let* ((up (-> self control dynam gravity-normal))
-            (vs (vector-dot up (-> self control transv)))
-            (dv (fmin (- *fc-flap-hold-bonus* *tf-flap-hold-given*) (* *fc-flap-hold-accel* (seconds-per-frame))))
-            )
-       ;; the flap's own cap still applies to tapped flaps; held flaps may exceed it by the bonus
-       (set! dv (fmax 0.0 (fmin dv (- (+ TF-CLIMB-CAP *fc-flap-hold-bonus*) vs))))
-       ;; gravity would eat the push, so cancel it too while holding
-       (set! dv (+ dv (* (-> self control dynam gravity-length) (seconds-per-frame))))
-       (vector+float*! (-> self control transv) (-> self control transv) up dv)
-       (set! *tf-flap-hold-given* (+ *tf-flap-hold-given* dv))
-       )
-     )
-    (else
-      (set! *tf-flap-holding?* #f)
+        )
       )
+    (if (<= dv (meters 0.01))
+        (set! *tf-flap-holding?* #f)
+        )
     )
   (none)
   )

@@ -330,27 +330,31 @@
   )
 
 (defbehavior fc-dark-flap-hold-tick target ()
-  "Per frame: holding X through a flap keeps pushing up (cancelling gravity too), up to the bonus."
-  (cond
-    ((and *fc-flap-holding?*
-          (cpad-hold? (-> self control cpad number) x)
-          (< *fc-flap-hold-given* *fc-flap-hold-bonus*)
+  "Per frame: holding X through a flap keeps pushing up (cancelling gravity too), up to the bonus.
+   The hold also ends when the climb cap or the city ceiling leaves it nothing to add: a flap out of
+   a glide (28 m/s) starts above the cap, so the budget never ran out and gravity stayed cancelled,
+   and Jak rose forever while X was held (2026-10-12)."
+  (let ((dv 0.0))
+    (when (and *fc-flap-holding?*
+               (cpad-hold? (-> self control cpad number) x)
+               (< *fc-flap-hold-given* *fc-flap-hold-bonus*)
+               )
+      (let* ((up (-> self control dynam gravity-normal))
+             (vs (vector-dot up (-> self control transv)))
+             )
+        (set! dv (fmin (- *fc-flap-hold-bonus* *fc-flap-hold-given*) (* *fc-flap-hold-accel* (seconds-per-frame))))
+        (set! dv (fmax 0.0 (fmin dv (- (+ *fc-dark-climb-cap* *fc-flap-hold-bonus*) vs))))
+        (if (and *fc-in-city?* (< 0.0 *fc-city-ceiling*)) ;; not through the city ceiling
+            (set! dv (fmin dv (fmax 0.0 (* 2.0 (- *fc-city-ceiling* (-> self control trans y)))))))
+        (when (< (meters 0.01) dv) ;; only a real push cancels gravity
+          (set! *fc-flap-hold-given* (+ *fc-flap-hold-given* dv))
+          (vector+float*! (-> self control transv) (-> self control transv) up (+ dv (* (-> self control dynam gravity-length) (seconds-per-frame))))
           )
-     (let* ((up (-> self control dynam gravity-normal))
-            (vs (vector-dot up (-> self control transv)))
-            (dv (fmin (- *fc-flap-hold-bonus* *fc-flap-hold-given*) (* *fc-flap-hold-accel* (seconds-per-frame))))
-            )
-       (set! dv (fmax 0.0 (fmin dv (- (+ *fc-dark-climb-cap* *fc-flap-hold-bonus*) vs))))
-       (if (and *fc-in-city?* (< 0.0 *fc-city-ceiling*)) ;; not through the city ceiling
-           (set! dv (fmin dv (fmax 0.0 (* 2.0 (- *fc-city-ceiling* (-> self control trans y)))))))
-       (set! *fc-flap-hold-given* (+ *fc-flap-hold-given* dv))
-       (set! dv (+ dv (* (-> self control dynam gravity-length) (seconds-per-frame))))
-       (vector+float*! (-> self control transv) (-> self control transv) up dv)
-       )
-     )
-    (else
-      (set! *fc-flap-holding?* #f)
+        )
       )
+    (if (<= dv (meters 0.01))
+        (set! *fc-flap-holding?* #f)
+        )
     )
   (none)
   )
