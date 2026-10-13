@@ -38,9 +38,10 @@ exactly the same flight:
   flies through
 - **Square** is the real Dark Bomb: the wings fold, he dives in the bomb pose and lands in its blast
 
-About a second after he lands, the wings fold away and his dark attacks come back (straight away if
-you press an attack). Dark Jak can take off any time you have him — Light Jak's flight power isn't
-needed.
+After he lands the wings stay folded on his back while he walks around, ready for the next
+double-jump. They go, and his dark attacks come back, the moment you press an attack button on the
+ground (or when a vehicle, the JET-Board or a cutscene takes him). Dark Jak can take off any time you
+have him — Light Jak's flight power isn't needed.
 
 ### In Haven City
 

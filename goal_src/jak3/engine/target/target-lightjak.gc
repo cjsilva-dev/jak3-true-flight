@@ -1373,6 +1373,11 @@
 (define *tf-dark-return-after* (seconds 0.6)) ;; and this long: back to the dark animations (his dark
                                               ;; attacks need them; an attack press on the ground
                                               ;; brings them back at once)
+;; Corey (2026-10-12): the wings stay folded on his back while he walks around after a flight (what
+;; Light Jak's wings do), instead of folding away after the 0.3 s / 0.6 s above. They go, and his dark
+;; animations come back, when he presses an attack button on the ground, when another mode asks for
+;; its own animation set, or when a vehicle, the board, a grab or death takes him. #f = the old timer.
+(define *tf-dark-wings-stay?* #t)
 (define *tf-dark-takeoff?* #f)      ;; the next flap is a Dark Jak takeoff
 (define *tf-dark-takeoff-frame* 0.0) ;; ... which starts on the full-spread flap at this frame
 (define *tf-dark-slam?* #f)         ;; this slam is Dark Jak's: the real dark bomb
@@ -1515,15 +1520,20 @@
            (set! (-> self pending-ext-anim) (target-anim light))
            )
        )
-      ((or (time-elapsed? *tf-dark-last-fly* *tf-dark-return-after*)
-           ;; on the ground and going for a dark attack: don't make him wait
+      ((or (and (not *tf-dark-wings-stay?*) (time-elapsed? *tf-dark-last-fly* *tf-dark-return-after*))
+           ;; on the ground and going for a dark attack: don't make him wait (the held button, not the
+           ;; press: the attack state eats the press before this runs, so a press was never seen here)
            (and (logtest? (-> self control status) (collide-status on-surface on-ground))
-                (cpad-pressed? (-> self control cpad number) square circle triangle)
+                (cpad-hold? (-> self control cpad number) square circle triangle)
                 )
+           ;; the wings stay on his back between flights (*tf-dark-wings-stay?*) until something else
+           ;; needs him: another mode's animation set, a vehicle, the board, a grab, death
+           (!= (-> self pending-ext-anim) (target-anim light))
+           (focus-test? self dead grabbed board pilot mech carry indax teleporting)
            )
        (true-flight-dark-return)
        )
-      ((and (not *tf-dark-folding?*) (time-elapsed? *tf-dark-last-fly* *tf-dark-fold-after*))
+      ((and (not *tf-dark-wings-stay?*) (not *tf-dark-folding?*) (time-elapsed? *tf-dark-last-fly* *tf-dark-fold-after*))
        (set! *tf-dark-folding?* #t)
        (send-event (ppointer->process (-> self lightjak wings)) 'end-mode)
        )
