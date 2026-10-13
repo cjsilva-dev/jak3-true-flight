@@ -477,7 +477,9 @@
                 )
               #f
               )
-             ((and (focus-test? self dark) (nonzero? (-> self darkjak)))
+             ((and (focus-test? self dark) (nonzero? (-> self darkjak))
+                   (= (-> self ext-anim) (target-anim dark)) ;; TRUE FLIGHT: his cutscene idle is a dark-set
+                   )                                          ;; animation; with the wings out the light set is in
               (ja-channel-push! 1 (seconds 0.15))
               (until #f
                 (ja-no-eval :group! (-> self draw art-group data 446) :num! (seek!) :frame-num 0.0)
@@ -598,18 +600,28 @@
            (set! (-> self control unknown-word04) (the-as uint 'stance))
            )
           (('target-darkjak-get-off)
-           (ja-channel-push! 1 (seconds 0.05))
-           (ja-no-eval :group! jakb-darkjak-get-off-ja :num! (seek!) :frame-num 0.0)
-           (until (ja-done? 0)
-             (set! (-> self darkjak-interp) (lerp-scale 1.0 0.0 (ja-aframe-num 0) 10.0 60.0))
-             (suspend)
-             (ja :num! (seek!))
-             )
-           (ja-no-eval :group! jakb-darkjak-get-off-end-ja :num! (seek!) :frame-num 0.0)
-           (until (ja-done? 0)
-             (set! (-> self darkjak-interp) (lerp-scale 1.0 0.0 (ja-aframe-num 0) 10.0 60.0))
-             (suspend)
-             (ja :num! (seek!))
+           ;; TRUE FLIGHT: the get-off animations are in the dark set. A cutscene that switches Dark Jak
+           ;; off while his wings are out (light set loaded) found them #f and crashed the game
+           ;; (Corey, intro level, 2026-10-12); without them he just drops the form.
+           (cond
+             ((= (-> self ext-anim) (target-anim dark))
+              (ja-channel-push! 1 (seconds 0.05))
+              (ja-no-eval :group! jakb-darkjak-get-off-ja :num! (seek!) :frame-num 0.0)
+              (until (ja-done? 0)
+                (set! (-> self darkjak-interp) (lerp-scale 1.0 0.0 (ja-aframe-num 0) 10.0 60.0))
+                (suspend)
+                (ja :num! (seek!))
+                )
+              (ja-no-eval :group! jakb-darkjak-get-off-end-ja :num! (seek!) :frame-num 0.0)
+              (until (ja-done? 0)
+                (set! (-> self darkjak-interp) (lerp-scale 1.0 0.0 (ja-aframe-num 0) 10.0 60.0))
+                (suspend)
+                (ja :num! (seek!))
+                )
+              )
+             (else
+               (set! (-> self darkjak-interp) 0.0)
+               )
              )
            (set! (-> self control unknown-word04) (the-as uint 'stance))
            )

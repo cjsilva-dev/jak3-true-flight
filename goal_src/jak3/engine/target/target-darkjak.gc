@@ -1154,6 +1154,12 @@
                (ja-eval)
                )
              )
+            ((!= (-> self ext-anim) (target-anim dark))
+             ;; TRUE FLIGHT: no dark set loaded (his wings are out, the light set is in): the get-off
+             ;; animation below is #f, so skip it and just drop the form (the :exit ends the mode)
+             (sound-play "djak-off")
+             (set! (-> self darkjak-interp) 0.0)
+             )
             (else
               (sound-play "djak-off")
               (ja-channel-push! 1 (seconds 0.05))
