@@ -1467,13 +1467,13 @@
    the swap itself. Returns #t once the dark set has been asked for. (Corey, 2026-10-13: fold them
    in, don't vanish them -- and no delay before the attack.)"
   (let ((w (-> self lightjak wings)))
-    (when (and w (not *tf-dark-folding?*))
+    (when (and w (!= (-> (the-as process (ppointer->process w)) state name) 'close)) ;; not folding yet
       (set! *tf-dark-folding?* #t)
       (set! *tf-wing-fold-speed* *tf-dark-attack-fold-speed*)
       (send-event (ppointer->process w) 'end-mode)
       )
     )
-  (true-flight-dark-return-set)
+  (true-flight-dark-return-set) ;; (clears *tf-dark-folding?* too: the wings' own state is the truth above)
   #t
   )
 
