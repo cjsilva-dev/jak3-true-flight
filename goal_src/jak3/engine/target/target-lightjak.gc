@@ -1433,10 +1433,10 @@
   (none)
   )
 
-(defbehavior true-flight-dark-return target ()
-  "Dark Jak's flight is over: drop the wings and give him his dark animations back -- but only if
-   the light set is still ours to swap (another mode may have asked for its own set meanwhile)."
-  (true-flight-dark-drop-wings)
+(defbehavior true-flight-dark-return-set target ()
+  "Give Dark Jak his dark animations back (the wings are someone else's business here: dropped by
+   the caller, or by powerups.gc the moment the light set unloads) -- but only if the light set is
+   still ours to swap (another mode may have asked for its own set meanwhile)."
   (fc-dark-glide-end) ;; (his flight may end mid-air: no glide or held flap left over for the next one)
   (set! *fc-flap-holding?* #f)
   (set! *fc-hunching?* #f)
@@ -1451,49 +1451,41 @@
   (none)
   )
 
-(define *tf-dark-fold-start* (the-as time-frame 0))
-(define *tf-dark-fold-max*   (seconds 0.5)) ;; the fold-in gets this long before the dark set is asked for anyway
+(defbehavior true-flight-dark-return target ()
+  "Dark Jak's flight is over: drop the wings and give him his dark animations back."
+  (true-flight-dark-drop-wings)
+  (true-flight-dark-return-set)
+  (none)
+  )
+
+(define *tf-dark-attack-fold-speed* 4.0) ;; the wings' fold-in plays this fast when an attack wants the dark set
 
 (defbehavior true-flight-dark-fold-step target ()
-  "Called every frame by whoever wants the dark set back while the wings are out: first the wings
-   fold back in (their own close animation, as at a Light Jak get-off), then the dark set is asked
-   for. Returns #t once it has been asked for. (Corey, 2026-10-13: fold them in, don't vanish them.)"
+  "Called every frame by whoever wants the dark set back while the wings are out: the wings start
+   their fold-in (fast) and the dark set is asked for at once; the swap lands about 5 frames later
+   and takes the folding wings with it (powerups.gc), so the dark attack starts with no wait beyond
+   the swap itself. Returns #t once the dark set has been asked for. (Corey, 2026-10-13: fold them
+   in, don't vanish them -- and no delay before the attack.)"
   (let ((w (-> self lightjak wings)))
-    (cond
-      ((not w) ;; nothing to fold
-       (true-flight-dark-return)
-       #t
-       )
-      ((not *tf-dark-folding?*)
-       (set! *tf-dark-folding?* #t)
-       (set-time! *tf-dark-fold-start*)
-       (send-event (ppointer->process w) 'end-mode)
-       #f
-       )
-      ((or (zero? (-> (the-as wings (ppointer->process w)) skel active-channels)) ;; folded (the close ends with no channels)
-           (time-elapsed? *tf-dark-fold-start* *tf-dark-fold-max*)
-           )
-       (true-flight-dark-return)
-       #t
-       )
-      (else
-        #f
-        )
+    (when (and w (not *tf-dark-folding?*))
+      (set! *tf-dark-folding?* #t)
+      (set! *tf-wing-fold-speed* *tf-dark-attack-fold-speed*)
+      (send-event (ppointer->process w) 'end-mode)
       )
     )
+  (true-flight-dark-return-set)
+  #t
   )
 
 (defbehavior true-flight-dark-attack-wait target ()
-  "At the start of a ground attack as Dark Jak with his wings out (the light set loaded): fold the
-   wings in, ask for the dark set and wait for it (about 5 frames on the Deck once asked), so the
-   attack that follows is his dark one and not a normal punch in between (Corey, 2026-10-13).
-   Gives up 1 s after the fold began. Returns #t when the dark set is in."
+  "At the start of a ground attack as Dark Jak with his wings out (the light set loaded): start the
+   wings' fold-in, ask for the dark set and wait for it (about 5 frames on the Deck), so the attack
+   that follows is his dark one and not a normal punch in between (Corey, 2026-10-13). Gives up
+   after 0.5 s. Returns #t when the dark set is in."
   (when (and *tf-dark-mode?* (true-flight-dark?) (!= (-> self ext-anim) (target-anim dark)))
+    (true-flight-dark-fold-step)
     (let ((t0 (current-time)))
-      (until (or (= (-> self ext-anim) (target-anim dark)) (time-elapsed? t0 (seconds 1)))
-        (if *tf-dark-mode?*
-            (true-flight-dark-fold-step)
-            )
+      (until (or (= (-> self ext-anim) (target-anim dark)) (time-elapsed? t0 (seconds 0.5)))
         (suspend)
         )
       )
@@ -1545,8 +1537,13 @@
            ((= (-> self ext-anim) (target-anim light))
             (set! *tf-dark-pending?* #f)
             (set-time! *tf-dark-last-fly*)
-            ;; wings still folding from the last flight can't reopen: start fresh ones
-            (if *tf-dark-folding?*
+            ;; wings still folding (or folded and asleep, or hidden) from the last flight can't
+            ;; reopen: start fresh ones
+            (if (or *tf-dark-folding?*
+                    (let ((w (-> self lightjak wings)))
+                      (and w (zero? (-> (the-as wings (ppointer->process w)) skel active-channels)))
+                      )
+                    )
                 (true-flight-dark-drop-wings)
                 )
             (set! *tf-dark-folding?* #f)
@@ -1579,8 +1576,8 @@
        (true-flight-dark-return)
        )
       ;; on the ground and going for a dark attack (the held button, not the press: the attack state
-      ;; eats the press before this runs): wings-stay folds the wings in first, then the dark set
-      ;; comes back (the attack state itself waits for it, true-flight-dark-attack-wait)
+      ;; eats the press before this runs): wings-stay starts the fold-in and the swap together
+      ;; (the attack state itself waits for the swap, true-flight-dark-attack-wait)
       ((and (logtest? (-> self control status) (collide-status on-surface on-ground))
             (cpad-hold? (-> self control cpad number) square circle triangle r1)
             )

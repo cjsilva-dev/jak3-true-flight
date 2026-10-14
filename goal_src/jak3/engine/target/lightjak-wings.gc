@@ -51,6 +51,7 @@
 (define *tf-dark-wing-zap-chance* 0.02) ;; random arcs off the wings per frame
 (define *tf-dark-wing-spark-chance* 0.5) ;; sparks shed per frame
 (define *tf-dark-wing-burst?* #f)   ;; takeoff: the wings burst out (sparks, lightning, pop)
+(define *tf-wing-fold-speed* 1.0)   ;; the close (fold-in) plays this fast; Dark Jak's attack fold sets it high (fresh wings: 1.0)
 (define *tf-dark-wing-pop* 1.0)     ;; size overshoot right after the burst, eases back to 1
 
 ;; color
@@ -917,10 +918,10 @@
   :code (behavior ()
     (sound-play "ltjak-wings-in")
     (ja-channel-push! 1 (seconds 0.1))
-    (ja-no-eval :group! jakb-wings-lightjak-get-off-ja :num! (seek!) :frame-num 0.0)
+    (ja-no-eval :group! jakb-wings-lightjak-get-off-ja :num! (seek! max *tf-wing-fold-speed*) :frame-num 0.0) ;; TRUE FLIGHT: fast for an attack
     (until (ja-done? 0)
       (suspend)
-      (ja :num! (seek!))
+      (ja :num! (seek! max *tf-wing-fold-speed*))
       )
     (ja-channel-set! 0)
     (sleep-code)
@@ -988,6 +989,7 @@
 ;; WARN: Return type mismatch object vs none.
 (defbehavior wings-init wings ((arg0 symbol))
   (set! *tf-wings-mode* 'none) ;; TRUE FLIGHT: fresh wings wear nobody's look yet
+  (set! *tf-wing-fold-speed* 1.0) ;; and fold at the normal speed
   (set! (-> self root) (new 'process 'trsqv))
   (initialize-skeleton
     self
