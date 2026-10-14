@@ -7,6 +7,7 @@
 
 ;; TRUE FLIGHT: Dark Jak flight (defined in target-lightjak.gc)
 (define-extern true-flight-dark-takeoff (function none :behavior target))
+(define-extern true-flight-dark-attack-wait (function symbol :behavior target)) ;; a ground attack with the wings out waits for the dark set
 
 ;; DECOMP BEGINS
 
@@ -2129,6 +2130,7 @@
     (target-exit)
     )
   :code (behavior ()
+    (true-flight-dark-attack-wait) ;; TRUE FLIGHT: wings out -> the dark set first, so the spin below is the dark one
     (let ((s5-0 jakb-attack-from-stance-ja)
           (gp-0 (if (and (focus-test? self dark)
                          (nonzero? (-> self darkjak))
@@ -2551,6 +2553,10 @@
       )
     )
   :code (behavior ()
+    ;; TRUE FLIGHT: wings out -> the dark set first, then the dark punch (the :enter's own handoff ran too early)
+    (if (and (true-flight-dark-attack-wait) (zero? (-> self darkjak latch-out-time)))
+        (go target-darkjak-running-attack)
+        )
     (if (logtest? (water-flag touch-water) (-> self water flags))
         (sound-play "swim-stroke")
         )
@@ -3089,6 +3095,7 @@
     (target-exit)
     )
   :code (behavior ((arg0 float) (arg1 float))
+    (true-flight-dark-attack-wait) ;; TRUE FLIGHT: wings out -> the dark set first, so the blast below can fire
     (let* ((v1-2 (ja-group))
            (f30-0 (if (and v1-2 (= v1-2 jakb-duck-stance-ja))
                       5.0
@@ -3535,6 +3542,17 @@
       )
     )
   :code (behavior ((arg0 float) (arg1 float) (arg2 float) (arg3 object))
+    ;; TRUE FLIGHT: wings out -> the dark set first, then the dark bomb (the :enter's own check ran too early)
+    (if (and (true-flight-dark-attack-wait)
+             (logtest? (-> self darkjak stage) (darkjak-stage bomb0))
+             (logtest? (the-as game-feature (logand (game-feature darkjak-bomb0) (-> *setting-control* user-current features)))
+                       (-> self game features)
+                       )
+             (zero? (-> self darkjak latch-out-time))
+             (>= (-> self game eco-pill-dark) (-> *FACT-bank* darkjak-bomb-min))
+             )
+        (go target-darkjak-bomb0)
+        )
     (if (using-gun? self)
         (push-anim-to-targ (-> self skel top-anim) (the-as art-joint-anim jakb-gun-flop-down-ja) 0.0 0 30 1.0 0.0 #f)
         )
