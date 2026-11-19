@@ -1,8 +1,53 @@
 {
   "schemaVersion": "1.0.0",
   "sourceName": "Dark Flight & True Flight",
-  "lastUpdated": "2026-10-14T01:21:42Z",
+  "lastUpdated": "2026-11-19T22:00:07Z",
   "mods": {
+    "light-jak": {
+      "displayName": "Light Jak",
+      "description": "Click R3 and Jak becomes the glowing Light Jak from the game's ending, with Jak 3's Light Jak flight: flaps, glide, turbo, dash and a superhero landing. Fly from one area of the world to the next: the mod loads the area ahead of you as you fly.",
+      "authors": [
+        "cjsilva-dev"
+      ],
+      "tags": [
+        "gameplay"
+      ],
+      "websiteUrl": "https://github.com/cjsilva-dev/jak1-light-jak#readme",
+      "supportedGames": [
+        "jak1"
+      ],
+      "perGameConfig": {
+        "jak1": {
+          "coverArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/light-jak-cover.png",
+          "thumbnailArtUrl": "https://raw.githubusercontent.com/cjsilva-dev/jak3-true-flight/main/launcher-art/light-jak-thumbnail.png",
+          "releaseDate": "2026-11-19"
+        }
+      },
+      "externalLink": null,
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishedDate": "2026-11-19T22:00:07Z",
+          "supportedGames": [
+            "jak1"
+          ],
+          "settings": {
+            "decompConfigOverride": "",
+            "shareVanillaSaves": false
+          },
+          "assets": {
+            "windows": "https://github.com/cjsilva-dev/jak1-light-jak/releases/download/v0.1.0/windows-v0.1.0.zip",
+            "linux": "https://github.com/cjsilva-dev/jak1-light-jak/releases/download/v0.1.0/linux-v0.1.0.tar.gz",
+            "macos": "https://github.com/cjsilva-dev/jak1-light-jak/releases/download/v0.1.0/macos-intel-v0.1.0.tar.gz"
+          },
+          "assetDownloadCounts": {
+            "windows": 0,
+            "linux": 0,
+            "macos": 0
+          }
+        }
+      ]
+    },
     "jet-board-start": {
       "displayName": "JET-Board Start",
       "description": "The JET-Board from the first moment of the game: press R2 to ride from the prison onwards. The story plays out as written; Keira's training and the board missions are unchanged.",
